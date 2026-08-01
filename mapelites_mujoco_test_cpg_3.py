@@ -636,7 +636,7 @@ def run_evaluation(
 
 def mujoco_main(
     algorithm: str = "MAPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
-    algorithm_params: dict[str, float | bool | list[tuple[int, int]]] = {"sigma0": 0.1}, # paramater dict for algorithm. See create_scheduler for details per algorithm.
+    algorithm_params: str = "{}", # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
     xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
@@ -652,6 +652,9 @@ def mujoco_main(
     run_eval_num_to_sim: int | None = None, # top X elites to evaluate and create videos of, if run_eval true
     run_eval_use_saved_emitter_0: bool = False, # if run_eval true, whether to use the saved emitter 0 (if it exists) or just read the archive.csv. For floating point precision.
 ) -> None:
+
+    if (isinstance(algorithm_params, str)):
+        algorithm_params = json.loads(algorithm_params)
 
     # if printing, be detailed - otherwise floating point truncation
     np.set_printoptions(precision=17, suppress=True) 
