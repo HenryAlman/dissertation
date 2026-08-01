@@ -87,7 +87,7 @@ def simulate(
     done = False # track whether session was terminated or truncated
     
     # initialise
-    if (xml_file == "/home/henry/PythonDissertation/new_racecar.xml"):
+    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
         # uses simple/direct policy
         w_end = 8
         weights = model[:w_end].reshape(4, 2)
@@ -157,7 +157,7 @@ def simulate(
                 ])
 
         # adding middle right hip/ank, middle left hip/ank
-        if (xml_file == "/home/henry/PythonDissertation/rangefinder_hex.xml"):
+        if (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
             # torque directions work exactly the same as back legs
             sign_mask = np.append(sign_mask, [
                 1.0, # midright hip
@@ -208,7 +208,7 @@ def simulate(
         rangefinders = 1.0 - np.clip(rangefinders_data / maze_max_dist, 0.0, 1.0)
 
         # CAR:
-        if (xml_file == "/home/henry/PythonDissertation/new_racecar.xml"):
+        if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
             velocimeter_x = mujoco_data.sensordata[3].copy()
             velocimeter_y = mujoco_data.sensordata[4].copy()
             xy_speed = math.sqrt(velocimeter_x**2 + velocimeter_y**2)
@@ -713,17 +713,17 @@ def mujoco_main(
 
     # XML-BASED PARAMS:
     # FUTURE WORK/TODO: parametrise this, allow users to input e.g. how many RBFs and let it crash if specified wrong
-    if (xml_file == "/home/henry/PythonDissertation/rangefinder_ant.xml"):
+    if (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml"):
         solution_dim = 25
         lower_bounds=np.hstack([0.05, np.full(20, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
         upper_bounds=np.hstack([0.25, np.full(20, 0.8), np.full(4, 1.5)])
         xml_str = "ant"
-    elif(xml_file == "/home/henry/PythonDissertation/rangefinder_hex.xml"):
+    elif(xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
         solution_dim = 25
         lower_bounds=np.hstack([0.05, np.full(20, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
         upper_bounds=np.hstack([0.25, np.full(20, 0.8), np.full(4, 1.5)])
         xml_str = "hex"
-    elif (xml_file == "/home/henry/PythonDissertation/new_racecar.xml"):
+    elif (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
         solution_dim = 10
         lower_bounds=np.full(solution_dim, -1) # raw weights from inputs to outputs. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         upper_bounds=np.full(solution_dim, 1) # raw weights. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
