@@ -29,6 +29,6 @@ export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export BLIS_NUM_THREADS=1
 
-python3 dissertation/mapelites_mujoco_test_cpg_3.py $ARGS
+eval "python3 dissertation/mapelites_mujoco_test_cpg_3.py $ARGS"
 
 conda deactivate
