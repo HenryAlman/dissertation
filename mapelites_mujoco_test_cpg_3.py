@@ -792,6 +792,11 @@ def mujoco_main(
         save_heatmap(scheduler.result_archive, outdir / "result_archive_heatmap.png", maze_params["min_obj"])
         save_metrics(outdir, passive_metrics, "result")
 
+    # save emitter (including its archive, GP, etc.) to load and use later.
+    if (save_emitter_0):
+        emitter_filepath=str(outdir / "emitter0.sav")
+        pickle.dump(scheduler._emitters[0], open(emitter_filepath, 'wb'))
+
     # if enabled, use BOP-Elites prediction map to predict and then actually assess elites at the final result_archive resolution
     if (algorithm == "BOPElites" and algorithm_params["make_prediction_archive"]):
         create_predicted_archive(
@@ -805,11 +810,6 @@ def mujoco_main(
             seed=seed,
             outdir=outdir
         )
-
-    # save emitter (including its archive, GP, etc.) to load and use later.
-    if (save_emitter_0):
-        emitter_filepath=str(outdir / "emitter0.sav")
-        pickle.dump(scheduler._emitters[0], open(emitter_filepath, 'wb'))
             
 
 """
