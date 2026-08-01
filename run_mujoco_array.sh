@@ -3,14 +3,14 @@
 #SBATCH --job-name=henry_diss
 #SBATCH --output=slurmlogs/job_%A_%a.out
 #SBATCH --error=slurmlogs/job_%A_%a.err
-#SBATCH --time=00:00:60
+#SBATCH --time=00:10:00
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 
-#SBATCH --array=1-60
+#SBATCH --array=1-3
 
 module purge
 cd /users/40795510/sharedscratch/
