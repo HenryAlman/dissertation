@@ -3,7 +3,7 @@
 #SBATCH --job-name=henry_diss
 #SBATCH --output=slurmlogs/job_%A_%a.out
 #SBATCH --error=slurmlogs/job_%A_%a.err
-#SBATCH --time=00:10:00
+#SBATCH --time=1:00:00
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
