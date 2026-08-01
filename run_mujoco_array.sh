@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=bopelites
+#SBATCH --job-name=henry_diss
 #SBATCH --output=slurmlogs/job_%A_%a.out
 #SBATCH --error=slurmlogs/job_%A_%a.err
 #SBATCH --partition=standard
@@ -14,8 +14,9 @@
 #SBATCH --array=1-60
 
 module purge
-module load python/3.06
-source my_env/bin/activate
+cd /users/40795510/sharedscratch/dissertation
+module load apps/anaconda3/2024.10
+source activate ./test_venv
 
 ARGS=$(sed -n "{$SLURM_ARRAY_TASK_ID}p" params.text)
 
@@ -31,4 +32,4 @@ export BLIS_NUM_THREADS=1
 
 python3 PythonDissertation/mapelites_mujoco_test_cpg_3.py $ARGS
 
-deactivate
+conda deactivate
