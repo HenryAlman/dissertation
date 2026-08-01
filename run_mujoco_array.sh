@@ -3,7 +3,6 @@
 #SBATCH --job-name=henry_diss
 #SBATCH --output=slurmlogs/job_%A_%a.out
 #SBATCH --error=slurmlogs/job_%A_%a.err
-#SBATCH --partition=nodes*
 #SBATCH --time=00:00:60
 
 #SBATCH --nodes=1
