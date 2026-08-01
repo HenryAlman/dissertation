@@ -3,8 +3,8 @@
 #SBATCH --job-name=henry_diss
 #SBATCH --output=slurmlogs/job_%A_%a.out
 #SBATCH --error=slurmlogs/job_%A_%a.err
-#SBATCH --partition=standard
-#SBATCH --time=28:00:00
+#SBATCH --partition=nodes*
+#SBATCH --time=00:00:60
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -14,13 +14,13 @@
 #SBATCH --array=1-60
 
 module purge
-cd /users/40795510/sharedscratch/dissertation
+cd /users/40795510/sharedscratch/
 module load apps/anaconda3/2024.10
 source activate ./test_venv
 
-ARGS=$(sed -n "{$SLURM_ARRAY_TASK_ID}p" params.text)
+ARGS=$(sed -n "${SLURM_ARRAY_TASK_ID}p" dissertation/params.text)
 
-echo "Starting task ${$SLURM_ARRAY_TASK_ID}"
+echo "Starting task ${SLURM_ARRAY_TASK_ID}"
 echo "Args: ${ARGS}"
 
 export OMP_NUM_THREADS=1
@@ -30,6 +30,6 @@ export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export BLIS_NUM_THREADS=1
 
-python3 /users/40795510/sharedscratch/dissertation/mapelites_mujoco_test_cpg_3.py $ARGS
+python3 dissertation/mapelites_mujoco_test_cpg_3.py "$ARGS"
 
 conda deactivate
