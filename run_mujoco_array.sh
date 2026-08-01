@@ -8,7 +8,7 @@
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus_per_task=1
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 
 #SBATCH --array=1-60
