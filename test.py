@@ -30,7 +30,7 @@ maze_params = {
         "min_obj": min_obj
     }
 
-xml_file = "/home/henry/PythonDissertation/rangefinder_ant.xml"
+xml_file = "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml"
 
 env_seed = 52
 
