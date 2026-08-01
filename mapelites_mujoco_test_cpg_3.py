@@ -365,7 +365,7 @@ def create_scheduler(
                 lower_bounds=lower_bounds,
                 upper_bounds=upper_bounds,
                 search_nrestarts=algorithm_params["search_nrestarts"], # ENSURE > 3 as we use warm start(!) Number of pattern search restarts for optimising acquisition function
-                num_initial_samples=20*solution_dim, # doubled from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf. We double b/c our simulations aren't that expensive and we're interested in wall-clock time.
+                num_initial_samples=2*solution_dim, # doubled from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf. We double b/c our simulations aren't that expensive and we're interested in wall-clock time.
                 batch_size=batch_size,
                 seed=s,
             )
@@ -382,7 +382,7 @@ def create_scheduler(
                 entropy_ejie=algorithm_params["entropy_ejie"], # bool, whether to use entropy variant of EJIE
                 upscale_schedule=algorithm_params["upscale_schedule"], # list[tuple[int,int]] of successively more granular archive dims
                 min_obj=qd_score_offset, # precalculated minimum objective per maze; needed to evaluate expected improvement for empty cells in archive when calculating EJIE acquisition value
-                num_initial_samples=20*solution_dim,#doubled from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf. We double b/c our simulations aren't that expensive and we're interested in wall-clock time.
+                num_initial_samples=2*solution_dim,#doubled from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf. We double b/c our simulations aren't that expensive and we're interested in wall-clock time.
                 batch_size=batch_size,
                 seed=s,
             )
