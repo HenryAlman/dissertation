@@ -98,7 +98,7 @@ def simulate(
     done = False # track whether session was terminated or truncated
     
     # initialise
-    if (xml_file == "/home/henry/dissertation/dissertation/new_racecar.xml"):
+    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
         # uses simple/direct policy
         w_end = 8
         weights = model[:w_end].reshape(4, 2)
@@ -168,7 +168,7 @@ def simulate(
                 ])
 
         # adding middle right hip/ank, middle left hip/ank
-        if (xml_file == "/home/henry/dissertation/rangefinder_hex.xml"):
+        if (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
             # torque directions work exactly the same as back legs
             sign_mask = np.append(sign_mask, [
                 1.0, # midright hip
@@ -222,7 +222,7 @@ def simulate(
         rangefinders = 1.0 - np.clip(rangefinders_data / maze_max_dist, 0.0, 1.0)
 
         # CAR:
-        if (xml_file == "/home/henry/dissertation/new_racecar.xml"):
+        if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
             velocimeter_x = mujoco_data.sensordata[3].copy()
             velocimeter_y = mujoco_data.sensordata[4].copy()
             xy_speed = math.sqrt(velocimeter_x**2 + velocimeter_y**2)
@@ -537,7 +537,7 @@ def mujoco_main(
     algorithm_params = {"sigma0":0.1}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/home/henry/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     env_seed: int = 52, # seed for creating the simulation environment
     time_to_run: int = 60, # seconds to run for
     log_freq: int = 5, # log metrics every X iterations
@@ -613,17 +613,17 @@ def mujoco_main(
 
     # XML-BASED PARAMS:
     # FUTURE WORK/TODO: parametrise this, allow users to input e.g. how many RBFs and let it crash if specified wrong
-    if (xml_file == "/home/henry/dissertation/rangefinder_ant.xml"):
+    if (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml"):
         solution_dim = 25
         lower_bounds=np.hstack([0.05, np.full(20, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
         upper_bounds=np.hstack([0.25, np.full(20, 0.8), np.full(4, 1.5)])
         xml_str = "ant"
-    elif(xml_file == "/home/henry/dissertation/rangefinder_hex.xml"):
+    elif(xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
         solution_dim = 25
         lower_bounds=np.hstack([0.05, np.full(20, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
         upper_bounds=np.hstack([0.25, np.full(20, 0.8), np.full(4, 1.5)])
         xml_str = "hex"
-    elif (xml_file == "/home/henry/dissertation/new_racecar.xml"):
+    elif (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
         solution_dim = 10
         lower_bounds=np.full(solution_dim, -1) # raw weights from inputs to outputs. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         upper_bounds=np.full(solution_dim, 1) # raw weights. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
@@ -662,7 +662,7 @@ def mujoco_main(
             Path("dissertation_logs")
             / Path(__file__).stem
             / f"{algorithm}_{maze_str}_{xml_str}"
-            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}")
+            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{np.randint(1000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
         )
         if outdir is None
         else Path(outdir)

@@ -831,12 +831,12 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                 occupied, elite_data = self.archive.retrieve_single(cell_center)
                 if (occupied):
                     x0 = elite_data["solution"]
-                    print("occupied found!")
+                    #print("occupied found!")
                 else:
                     distances = np.linalg.norm(all_measures - cell_center, axis=1)
                     closest_idx = np.argmin(distances)
                     if (distances[closest_idx] > max_allowable_distance):
-                        print("No valid elite in range. Skipping.")
+                        #print("No valid elite in range. Skipping.")
                         continue
                     x0 = all_solutions[closest_idx]
 
@@ -872,9 +872,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                     predicted_elites.append(best_solution)
                 else:
                     # if it fails to find a predicted improvement, take the existing elite if it sits within this cell (i.e. isn't a "closest" elite)
-                    print("No improvement found.")
+                    #print("No improvement found.")
                     if(occupied):
-                        print("Adding existing elite.")
+                        #print("Adding existing elite.")
                         predicted_elites.append(x0)
 
         return predicted_elites
