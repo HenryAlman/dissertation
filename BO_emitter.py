@@ -12,7 +12,7 @@ from scipy.stats.qmc import Sobol
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, WhiteKernel
-from sklearn.preprocessing import StandardScaler
+
 
 from ribs._utils import check_batch_shape, check_finite, validate_batch
 from ribs.archives import GridArchive
@@ -23,10 +23,7 @@ from ribs.typing import BatchData, Float, Int
 # - Functionally, removed unnecessary operations (e.g. upscaling, multi-output GP -> single-output GP), 
 # - redefined acquisition function to be standard Expected Improvement with jitter,
 # - changed kernel to use ARD. Initially added a small added WhiteKernel for noise but have commented out for now.
-# - added n_restarts_optimiser = 5 to the GP
-# - warm restart for pattern search - force inject 3 best performing points so far
-#       NOTE the above requires search_nrestarts > 3, and ideally set it high enough that we're still grabbing a good number of sobol-sampled points alongside the warm restart.
-#       NOTE the above is also *heavily* exploitation-biased, so having a reasonably large jitter to push a bit of exploration back in should be fine.
+# - added n_restarts_optimiser to the GP
 
 # NOTE As noted in BOPE_emitter, we can't use lengthscale priors in sklearn, which is now the standard in BOTORCH and would be advantageous for high dimensions. See: https://arxiv.org/abs/2402.02229
 
@@ -109,7 +106,7 @@ class BOEmitter(EmitterBase):
             alpha = 1e-10,
             normalize_y=True, 
             n_targets=1,
-            n_restarts_optimizer=5
+            n_restarts_optimizer=2
         )
 
         if num_initial_samples is None and initial_solutions is None:
@@ -243,6 +240,10 @@ class BOEmitter(EmitterBase):
         best_obj = np.max(all_objs)
         worst_obj = np.min(all_objs)
         jitter = np.maximum(0.1 / (best_obj - worst_obj), 0.05)
+        # mathematical example: very early on, say best_obj-worst_obj=1 metre.
+        # predicted fitness (mu) must be 0.1m higher than our current best to be considered an "actual" improvement, otherwise we push it negative
+        # the lowest this drops is 0.05, i.e. 50 centimetres.
+        # so this is a fairly small bias 
 
         stds = np.maximum(stds, 1e-9) # extremely small value at least to avoid divide by zero error
         improvements = mus - best_obj - jitter
@@ -251,8 +252,6 @@ class BOEmitter(EmitterBase):
         eis = improvements * norm.cdf(zs) + stds * norm.pdf(zs)
         eis = np.maximum(eis, 0.0)
 
-        # worth noting: we warm-restart our search below with the three highest-objective points so far. 
-        # This is *heavily* exploitation-biased, so having a reasonably large jitter to push a bit of exploration back in should be fine.
         return eis, mus, stds
 
     def ask(self) -> np.ndarray:
@@ -277,24 +276,11 @@ class BOEmitter(EmitterBase):
             samples = self._sample_n_rescale(self.num_sobol_samples)
             starting_eis, mus, stds = self._get_ei_values(samples)
 
-            """note: AI provided this code as a diagnostic for whether above code was working:
-            print(f"\n--- BO Diagnostic [Seed {self._seed}] ---")
-            print(f"GP Global Mean range:   {np.min(mus):.2f} to {np.max(mus):.2f}")
-            print(f"GP Global Std range:    {np.min(stds):.2f} to {np.max(stds):.2f}")
-            print(f"Starting EI range:     {np.min(starting_eis):.2f} to {np.max(starting_eis):.2f}")
-            """
-
-            # force three of the search start points to be our top three performers so far
             search_starting_points = samples[
                 np.argsort(starting_eis)[
-                    (-self._search_nrestarts+3) :
+                    (-self._search_nrestarts) :
                 ]
             ]
-            top3 = self._dataset["solution"][
-                np.argsort(self._dataset["objective"].ravel())[-3:][::-1]
-            ]
-            search_starting_points = np.vstack([search_starting_points, top3])
-
 
             for x0 in search_starting_points:
                 optimizer = self._pymoo_mods["PatternSearch"](x0=x0)
@@ -314,12 +300,6 @@ class BOEmitter(EmitterBase):
         
         optimized_samples = np.array(optimization_outcomes["optimized_samples"])
         optimized_eis = np.array(optimization_outcomes["optimized_eis"])
-
-        """note: AI provided this code as a diagnostic for whether above code was working:
-        print(f"Best Sobol EI:         {np.max(starting_eis):.2f}")
-        print(f"Polished Peak EI:      {np.max(optimized_eis):.2f}")
-        print(f"Local Search Delta:     {np.max(optimized_eis) - np.max(starting_eis):.2f}")
-        """
 
         # identify best [batch_size] solutions
         sorted_idx = np.argsort(optimized_eis)[::-1][: self.batch_size]

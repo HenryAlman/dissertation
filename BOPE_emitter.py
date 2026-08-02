@@ -21,16 +21,14 @@ from ribs.typing import BatchData, Float, Int
 
 # Adapted from the pyribs BayesianOptimisationEmitter for BOPElites.
 # Matched what was possible from BOEmitter:
-# added n_restarts_optimiser = 5
-# warm restart for pattern search - force inject 3 best performing points so far
-# NOTE the above requires search_nrestarts > 3, and ideally set it high enough that we're still grabbing a good number of sobol-sampled points alongside the warm restart.
+# added n_restarts_optimiser
 
 # ARD challenging because the same kernel is initialised over all three scikit learn internal GPs, and they'll have different length scales. 
 # This is one of two reasons a switch away from sklearn would be good here.
 # The other is the possibility for applying *length scale priors* to help with high-dimensional BO. This is now the standard in BOTORCH. See: https://arxiv.org/abs/2402.02229
 
 # Additionally added functionality to use the trained GP to make predictions over a higher-res archive cell, using existing elites in main archive as warm starts.
-# NOTE: this is *very very time consuming* as it requires many iterations of predicting from the GP. Consider pickling and saving this and doing it later.
+# NOTE: this is *very very time consuming* as it requires many iterations of predicting from the GP. Consider pickling and saving the emitter and doing it later, see main script.
 
 
 # TODO: make many of the choices made in the above parameters rather than hard coded.
@@ -158,7 +156,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         # output for each measure function
         # NOTE: Using Matern kernal with default parameters
         self._gp = GaussianProcessRegressor(
-            kernel=Matern(), normalize_y=True, n_targets=1 + self.measure_dim, n_restarts_optimizer=5
+            kernel=Matern(), normalize_y=True, n_targets=1 + self.measure_dim, n_restarts_optimizer=2
         )
 
         if num_initial_samples is None and initial_solutions is None:
@@ -627,13 +625,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
 
             search_starting_points = samples[
                 np.argsort(np.sum(starting_ejie_by_cell, axis=1))[
-                    -self._search_nrestarts+3 :
+                    -self._search_nrestarts :
                 ]
             ]
-            top3 = self._dataset["solution"][
-                                        np.argsort(self._dataset["objective"].ravel())[-3:][::-1]
-                                    ]
-            search_starting_points = np.vstack([search_starting_points, top3])
 
             # optimizes ejie values of starting points
             found_positive_ejie = False
