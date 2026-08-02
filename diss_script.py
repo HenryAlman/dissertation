@@ -7,10 +7,18 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-# if issues with graphics drivers with gladGL error, try the below:
+os.environ["BLIS_NUM_THREADS"] = "1"
+os.environ["TORCH_NUM_THREADS"] = "1" 
+# if issues with graphics drivers with gladGL error when trying to create videos, try the below:
 """
 os.environ["MUJOCO_GL"] = "egl"
 """
+
+import torch
+torch.set_num_threads(1)
+# if printing, be detailed - otherwise floating point truncation
+import numpy as np
+np.set_printoptions(precision=17, suppress=True) 
 
 # util imports
 import sys
@@ -25,13 +33,11 @@ import imageio
 
 # libs
 import fire # cmd line parameter/arguments for main
-#import psutil # tracking single-threadedness, test only
-import numpy as np
+import psutil # TODO: tracking single-threadedness, test only
 from numpy.typing import ArrayLike
-import pandas as pd # used for saving/reading archive CSVs and dataframes
+import pandas as pd
 import gymnasium as gym
 import gymnasium_robotics
-import matplotlib.pyplot as plt
 from loguru import logger as log
 
 # pyribs and customised versions
@@ -42,12 +48,12 @@ from BOPE_emitter import CustomBayesianOptimizationEmitter # import from custom 
 from BOPE_scheduler import CustomBayesianOptimizationScheduler # same as the default, just changed to expect CustomBayesianOptimizationEmitter not pyribs one
 from BO_emitter import BOEmitter # custom BO-only emitter and scheduler
 from BO_scheduler import BOScheduler
-from ribs.visualize import grid_archive_heatmap
 
 from gymnasium_robotics.envs.maze.maps import OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-
 # custom environment wrapper over AntMaze
 from mujoco_env_wrapper import MujocoEnvWrapper
+
+from diss_utils import save_heatmap, save_ccdf, save_metrics
 
 
 def simulate(
@@ -73,11 +79,16 @@ def simulate(
     base_env.unwrapped.include_sensors = True
     env = MujocoEnvWrapper(base_env, max_episode_steps)
     
-
     total_reward = 0.0
+    #measures:
     linear_x_velocities = []
     linear_y_velocities = []
-    angular_z_axis_velocities = []
+    min_front_rangefinder = maze_max_dist
+    #not a measure, but we also return the final position
+    # we can use this to construct a heatmap of where each elite ended up,
+    # helping us to see the effect of deception
+    final_x_pos = 0
+    final_y_pos = 0
     reached_goal = False
 
     if (record_video):
@@ -87,7 +98,7 @@ def simulate(
     done = False # track whether session was terminated or truncated
     
     # initialise
-    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
+    if (xml_file == "/home/henry/dissertation/dissertation/new_racecar.xml"):
         # uses simple/direct policy
         w_end = 8
         weights = model[:w_end].reshape(4, 2)
@@ -134,7 +145,7 @@ def simulate(
         # we use a heavily simplified version - rather than shunting inhibition nodes,
         # we just add/subtract weighted sensor output from the torques.
         sensor_reflex_map = np.array([
-            # frontright hip gets hip signal and inverts sign of sensordiff 
+            # frontright hip gets hip signal and inverts sign of sensordiff signal
             # (as sensor diff is calculated as left - right, with closer being higher, so if positive then left wall is closer
             # and we want to turn right, i.e. dampen right motion and exaggerate left motion).
             # same logic for the others.
@@ -157,7 +168,7 @@ def simulate(
                 ])
 
         # adding middle right hip/ank, middle left hip/ank
-        if (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
+        if (xml_file == "/home/henry/dissertation/rangefinder_hex.xml"):
             # torque directions work exactly the same as back legs
             sign_mask = np.append(sign_mask, [
                 1.0, # midright hip
@@ -201,6 +212,9 @@ def simulate(
 
         # get sensor data
         rangefinders_data = mujoco_data.sensordata[:3].copy()
+        # save measure
+        if (rangefinders_data[1] < min_front_rangefinder):
+            min_front_rangefinder = rangefinders_data[1]
         # rangefinders return -1 return if hit nothing; we want this to engender behaviour like a far away wall, not a close wall,
         # so for any -1 returns we instead set to the maze_max_dist
         rangefinders_data[rangefinders_data == -1.0] = maze_max_dist
@@ -208,7 +222,7 @@ def simulate(
         rangefinders = 1.0 - np.clip(rangefinders_data / maze_max_dist, 0.0, 1.0)
 
         # CAR:
-        if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
+        if (xml_file == "/home/henry/dissertation/new_racecar.xml"):
             velocimeter_x = mujoco_data.sensordata[3].copy()
             velocimeter_y = mujoco_data.sensordata[4].copy()
             xy_speed = math.sqrt(velocimeter_x**2 + velocimeter_y**2)
@@ -267,14 +281,6 @@ def simulate(
         done = terminated or truncated
         linear_x_velocities.append(info["linear_x_velocity"])
         linear_y_velocities.append(info["linear_y_velocity"])
-        angular_z_axis_velocities.append(info["angular_z_axis_velocity"])
-
-        # fitness calculated as a sum over timesteps, rather than a single reward at the end
-        # this lets us incorporate e.g. control cost penalties for high torques, collision penalties, etc.
-        # see mujoco_env_wrapper for details
-        # total_reward += reward
-
-        #current_step += 1
 
         # tracking if goal was reached; if still false, take on value from this step. If ever true, stop checking so we don't overwrite!
         if (not reached_goal):
@@ -283,19 +289,19 @@ def simulate(
         # measures extracted at final step
         if done:
             total_reward += reward
+            final_x_pos = info["x_pos"]
+            final_y_pos = info["y_pos"]
 
     env.close() # must close env after every sim!
 
-    # final measures: average of the xy-plane velocities, average (absolute) turning/yaw velocity
+    # measure: average of the xy-plane velocities
     avg_forward_vel = np.mean(np.sqrt(np.array(linear_x_velocities)**2 + np.array(linear_y_velocities)**2))
-    # we use absolute because we care about *how much* it turned throughout the run rather than which way it turned more/less
-    avg_angular_vel = np.mean(np.abs(angular_z_axis_velocities)) 
 
     if (record_video):
         path = str(record_outdir / f'videos/{record_video_idx}.mp4')
         imageio.mimsave(path, frames, fps=30)
 
-    return total_reward, avg_forward_vel, avg_angular_vel, reached_goal
+    return total_reward, avg_forward_vel, min_front_rangefinder, final_x_pos, final_y_pos, reached_goal
 
 
 def create_scheduler(
@@ -324,6 +330,7 @@ def create_scheduler(
             ranges=ranges,
             seed=seed,
             qd_score_offset=qd_score_offset,
+            extra_fields={"pos": ((2,), np.float64)}
         )
 
     # for MAP/Bayes, this is only archive. For BOP, it's the "result archive" at the intended final dimensionality
@@ -333,6 +340,7 @@ def create_scheduler(
         ranges=ranges,
         seed=seed,
         qd_score_offset=qd_score_offset,
+        extra_fields={"pos": ((2,), np.float64)}
     )
 
     # Seeds for emitters - note None means a random one is generated.
@@ -365,7 +373,7 @@ def create_scheduler(
                 lower_bounds=lower_bounds,
                 upper_bounds=upper_bounds,
                 search_nrestarts=algorithm_params["search_nrestarts"], # ENSURE > 3 as we use warm start(!) Number of pattern search restarts for optimising acquisition function
-                num_initial_samples=20*solution_dim, # doubled from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf. We double b/c our simulations aren't that expensive and we're interested in wall-clock time.
+                num_initial_samples=10*solution_dim, #  from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf.
                 batch_size=batch_size,
                 seed=s,
             )
@@ -382,7 +390,7 @@ def create_scheduler(
                 entropy_ejie=algorithm_params["entropy_ejie"], # bool, whether to use entropy variant of EJIE
                 upscale_schedule=algorithm_params["upscale_schedule"], # list[tuple[int,int]] of successively more granular archive dims
                 min_obj=qd_score_offset, # precalculated minimum objective per maze; needed to evaluate expected improvement for empty cells in archive when calculating EJIE acquisition value
-                num_initial_samples=20*solution_dim,#doubled from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf. We double b/c our simulations aren't that expensive and we're interested in wall-clock time.
+                num_initial_samples=10, #TODO: restore! 10*solution_dim,# from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf.
                 batch_size=batch_size,
                 seed=s,
             )
@@ -443,46 +451,55 @@ def run_search(
 
     start_time = time.time()
     goal_reached_counter = 0 # unimportant, just tracks how many runs reached the goal successfully in total
-    elapsed_time = 0
+    total_elapsed_time = 0
+    sim_time = 0
+    alg_time = 0
     iteration = 0
-    while elapsed_time < time_to_run:
+    while total_elapsed_time < time_to_run:
         iteration += 1 # logs are every x iterations so we track it
 
+        loop_time = time.time()
         # Request models from the scheduler.
         sols = scheduler.ask()
+        alg_time += time.time() - loop_time
 
         # Evaluate the models and record the objectives and measures.
-        objs, meas = [], []
-
-        # Ask the Dask client to distribute the simulations among the Dask workers, then
-        # gather the results of the simulations.
+        objs, meas, pos = [], [], []
+        
+        loop_time = time.time()
+        # Simulate suggested models/parameters
         results = [simulate(model, maze_params, xml_file, env_seed) for model in sols]
+        sim_time += time.time() - loop_time
 
         # Process the results.
-        for obj, linear_vel, angular_vel, reached_goal in results:
+        for obj, linear_vel, min_rangefinder, final_x_pos, final_y_pos, reached_goal in results:
             objs.append(obj)
-            meas.append([linear_vel, angular_vel])
+            meas.append([linear_vel, min_rangefinder])
+            pos.append([final_x_pos, final_y_pos])
             if (reached_goal):
                 goal_reached_counter += 1
 
+        loop_time = time.time() 
         # Send the results back to the scheduler. It will pass them onto each emitter.
-        scheduler.tell(objs, meas)
+        scheduler.tell(objs, meas, pos=pos)
+        alg_time += time.time() - loop_time
+
         #assert_single_threaded() #TODO: temp debug
 
         # Metrics.
-        elapsed_time = time.time() - start_time
-        metrics["Max Score"]["x"].append(elapsed_time)
+        total_elapsed_time = time.time() - start_time
+        metrics["Max Score"]["x"].append(total_elapsed_time)
         metrics["Max Score"]["y"].append(scheduler.archive.stats.obj_max)
-        metrics["Archive Size"]["x"].append(elapsed_time)
+        metrics["Archive Size"]["x"].append(total_elapsed_time)
         metrics["Archive Size"]["y"].append(len(scheduler.archive))
-        metrics["QD Score"]["x"].append(elapsed_time)
+        metrics["QD Score"]["x"].append(total_elapsed_time)
         metrics["QD Score"]["y"].append(scheduler.archive.stats.qd_score)
         if (passive_metrics is not None):
-            passive_metrics["Max Score"]["x"].append(elapsed_time)
+            passive_metrics["Max Score"]["x"].append(total_elapsed_time)
             passive_metrics["Max Score"]["y"].append(scheduler.result_archive.stats.obj_max)
-            passive_metrics["Archive Size"]["x"].append(elapsed_time)
+            passive_metrics["Archive Size"]["x"].append(total_elapsed_time)
             passive_metrics["Archive Size"]["y"].append(len(scheduler.result_archive))
-            passive_metrics["QD Score"]["x"].append(elapsed_time)
+            passive_metrics["QD Score"]["x"].append(total_elapsed_time)
             passive_metrics["QD Score"]["y"].append(scheduler.result_archive.stats.qd_score)
 
         # Logging.
@@ -490,156 +507,37 @@ def run_search(
         else: metrics_to_use = metrics
 
         # log first/last iteration, and every X iterations
-        if iteration % log_freq == 0 or iteration == 1 or elapsed_time >= time_to_run:
+        if iteration % log_freq == 0 or iteration == 1 or total_elapsed_time >= time_to_run:
             log.info(
                 "> {} itrs completed after {:.2f} s\n"
                 "  - Max Score: {}\n"
                 "  - Archive Size: {}\n"
                 "  - QD Score: {}\n"
                 "  - Goal Reached Count: {}\n"
-                "  - Archive Dims: {}",
+                "  - Archive Dims: {}\n"
+                "  - Alg Time: {:.2f} s\n"
+                "  - Sim Time: {:.2f} s",
                 iteration,
-                elapsed_time,
+                total_elapsed_time,
                 metrics_to_use["Max Score"]["y"][-1],
                 metrics_to_use["Archive Size"]["y"][-1],
                 metrics_to_use["QD Score"]["y"][-1],
                 goal_reached_counter,
-                scheduler.archive.dims # track archive dimensions if upscaling with BOPElites
+                scheduler.archive.dims, # track archive dimensions if upscaling with BOPElites
+                alg_time,
+                sim_time
             )
     
     return metrics, passive_metrics
 
 
-def save_heatmap(archive: GridArchive, filename: str | Path, min_obj: int | float) -> None:
-    """Saves a heatmap of the scheduler's archive to the filename.
-
-    Args:
-        archive: Archive with results from an experiment.
-        filename: Path to an image file.
-    """
-    fig, ax = plt.subplots(figsize=(8, 6))
-    grid_archive_heatmap(archive, vmin=min_obj, vmax=0, ax=ax)
-    ax.set_ylabel("Average angular velocity")
-    ax.set_xlabel("Average xy-speed")
-    fig.savefig(filename)
-
-
-def save_metrics(
-    outdir: Path, 
-    metrics: dict[str, dict[str, list[int | float]]],
-    prefix: str | None = None
-) -> None:
-    """Saves metrics to png plots and a JSON file.
-
-    Args:
-        outdir: output directory for saving files.
-        metrics: Metrics as output by run_search.
-    """
-    # Plot metrics.
-    for metric in metrics:
-        fig, ax = plt.subplots()
-        ax.plot(metrics[metric]["x"], metrics[metric]["y"])
-        ax.set_title(metric)
-        ax.set_xlabel("Elapsed Time")
-        if (prefix is not None): 
-            path = str(outdir / f"{prefix}_{metric.lower().replace(' ', '_')}.png")
-        else: 
-            path = str(outdir / f"{metric.lower().replace(' ', '_')}.png")
-        fig.savefig(path)
-
-    # Convert metrics to Python scalars by calling .item(), since each stats value is a
-    # 0-D array by default, and JSON cannot serialize 0-D arrays.
-    for metric in metrics:
-        metrics[metric]["y"] = [
-            m if isinstance(m, (int, float)) else m.item() for m in metrics[metric]["y"]
-        ]
-
-    # Save metrics to JSON.
-    if (prefix is not None):
-        with (outdir / f"{prefix}_metrics.json").open("w") as file:
-            json.dump(metrics, file, indent=2)
-    else:
-        with (outdir / "metrics.json").open("w") as file:
-            json.dump(metrics, file, indent=2)
-
-
-def save_ccdf(archive: ArchiveBase, filename: str | Path) -> None:
-    """Saves a CCDF showing the distribution of the archive's objectives.
-
-    CCDF = Complementary Cumulative Distribution Function (see
-    https://en.wikipedia.org/wiki/Cumulative_distribution_function#Complementary_cumulative_distribution_function_(tail_distribution)).
-    The CCDF plotted here is not normalized to the range (0,1). This may help when
-    comparing CCDF's among archives with different amounts of coverage (i.e. when one
-    archive has more cells filled).
-
-    Args:
-        archive: Archive with results from an experiment.
-        filename: Path to an image file.
-    """
-    fig, ax = plt.subplots()
-    ax.hist(
-        archive.data("objective"),
-        50,  # Number of cells.
-        histtype="step",
-        density=False,
-        cumulative=-1,  # CCDF rather than CDF.
-    )
-    ax.set_xlabel("Objectives")
-    ax.set_ylabel("Num. Entries")
-    ax.set_title("Distribution of Archive Objectives")
-    fig.savefig(filename)
-
-
-def run_evaluation(
-        outdir: Path, # directory containing archive.csv to run evaluations on
-        num_to_sim: int, # top X elites to evaluate
-        maze_params: dict[str, Any], # maze params to use
-        xml_file: str, # path to XML to use
-        env_seed: int, # seed for creating the simulation environment
-        seed: int | None,
-        use_saved_emitter_0: bool = False
-    ) -> None:
-
-    if (use_saved_emitter_0):
-        emitter = pickle.load(open(outdir / "emitter0.sav"))
-        df = ArchiveDataFrame(emitter.archive.data(return_type="pandas"))
-    else:
-        df = ArchiveDataFrame(pd.read_csv(outdir / "archive.csv"))
-
-    df_top = ArchiveDataFrame(df.sort_values(by="objective", ascending=False).head(num_to_sim))
-
-    video_folder = outdir / "videos"
-    video_folder.mkdir(parents=True, exist_ok=True)
-
-    # iterate through the top X elites, simulate them, and log stats
-    for idx, elite in enumerate(df_top.iterelites()):
-        model = elite["solution"]
-        archive_idx = df_top.index[idx]
-
-        reward, final_lin_vel, final_ang_vel, _ = simulate(model, maze_params, xml_file, env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
-        log.info(
-            "=== Index {} ===\n"
-            "Model:\n"
-            "{}\n"
-            "Reward: {}\n"
-            "Original Reward: {}\n"
-            "Final speeds (lin/ang): {} / {} \n"
-            "Original Final speeds: {}\n",
-            archive_idx,
-            model,
-            reward,
-            elite["objective"],
-            final_lin_vel, final_ang_vel,
-            elite["measures"]
-        )
-
-
 def mujoco_main(
     algorithm: str = "MAPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
-    algorithm_params: str = "{}", # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
+    #TODO: return this to empty dict string thing when uploading to cluster
+    algorithm_params = {"sigma0":0.1}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/home/henry/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     env_seed: int = 52, # seed for creating the simulation environment
     time_to_run: int = 60, # seconds to run for
     log_freq: int = 5, # log metrics every X iterations
@@ -653,11 +551,10 @@ def mujoco_main(
     run_eval_use_saved_emitter_0: bool = False, # if run_eval true, whether to use the saved emitter 0 (if it exists) or just read the archive.csv. For floating point precision.
 ) -> None:
 
+    # on HPC we pass algorithm_params in as a JSON string, see params.text
     if (isinstance(algorithm_params, str)):
         algorithm_params = json.loads(algorithm_params)
 
-    # if printing, be detailed - otherwise floating point truncation
-    np.set_printoptions(precision=17, suppress=True) 
     # register gymnasium robotics environments, i.e. AntMaze
     gym.register_envs(gymnasium_robotics)
 
@@ -665,43 +562,43 @@ def mujoco_main(
     if (maze_str == "OPEN"):
         maze = OPEN
         max_episode_steps = 1800
-        archive_dims = [20, 20]
-        archive_ranges = [(0, 0.8), (0, 2.0)]
         maze_options = { "goal_cell": np.array([1, 4], dtype=int),
                         "reset_cell": np.array([3, 1], dtype=int)
                         }
         maze_max_dist = 23.0
         min_obj = -17.0
+        archive_dims = [20, int(maze_max_dist)]
+        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
     elif (maze_str == "U_MAZE"):
         maze = U_MAZE
         max_episode_steps = 1800
-        archive_dims = [20, 20]
-        archive_ranges = [(0, 0.8), (0, 2.0)]
         maze_options = { "goal_cell": np.array([1, 1], dtype=int),
                         "reset_cell": np.array([3, 1], dtype=int)
                         }
         maze_max_dist = 12.0
         min_obj = -14.0
+        archive_dims = [20, int(maze_max_dist)]
+        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
     elif (maze_str == "MEDIUM_MAZE"):
         maze = MEDIUM_MAZE
         max_episode_steps = 3000
-        archive_dims = [20, 20]
-        archive_ranges = [(0, 0.8), (0, 2.0)]
         maze_options = { "goal_cell": np.array([6, 5], dtype=int),
                         "reset_cell": np.array([6, 1], dtype=int)
                         }
         maze_max_dist = 28.0
         min_obj = -28.0
+        archive_dims = [20, int(maze_max_dist)]
+        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
     elif (maze_str == "LARGE_MAZE"):
         maze = LARGE_MAZE
         max_episode_steps = 4000
-        archive_dims = [20, 20]
-        archive_ranges = [(0, 0.8), (0, 2.0)]
         maze_options = { "goal_cell": np.array([3, 8], dtype=int),
                         "reset_cell": np.array([7, 1], dtype=int)
                         }
         maze_max_dist = 40.0
         min_obj = -35.0
+        archive_dims = [20, int(maze_max_dist)]
+        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
     else:
         raise ValueError("Unknown map!")
 
@@ -716,17 +613,17 @@ def mujoco_main(
 
     # XML-BASED PARAMS:
     # FUTURE WORK/TODO: parametrise this, allow users to input e.g. how many RBFs and let it crash if specified wrong
-    if (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml"):
+    if (xml_file == "/home/henry/dissertation/rangefinder_ant.xml"):
         solution_dim = 25
         lower_bounds=np.hstack([0.05, np.full(20, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
         upper_bounds=np.hstack([0.25, np.full(20, 0.8), np.full(4, 1.5)])
         xml_str = "ant"
-    elif(xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
+    elif(xml_file == "/home/henry/dissertation/rangefinder_hex.xml"):
         solution_dim = 25
         lower_bounds=np.hstack([0.05, np.full(20, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
         upper_bounds=np.hstack([0.25, np.full(20, 0.8), np.full(4, 1.5)])
         xml_str = "hex"
-    elif (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
+    elif (xml_file == "/home/henry/dissertation/new_racecar.xml"):
         solution_dim = 10
         lower_bounds=np.full(solution_dim, -1) # raw weights from inputs to outputs. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         upper_bounds=np.full(solution_dim, 1) # raw weights. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
@@ -815,7 +712,7 @@ def mujoco_main(
         )
             
 
-"""
+
 # debug tool to test if single-threadedness is working
 def assert_single_threaded():
     current_process = psutil.Process(os.getpid())
@@ -824,10 +721,58 @@ def assert_single_threaded():
 
     if thread_count > 2: 
         print(f"Multithreading active, active OS threads: {thread_count}")
+        cpu_usage = current_process.cpu_percent(interval=0.01)
+        print(f"CPU usage: {cpu_usage:.1f}%")
     else:
         print(f"Single-threaded, active OS threads: {thread_count}")
-"""
 
+
+def run_evaluation(
+        outdir: Path, # directory containing archive.csv to run evaluations on
+        num_to_sim: int, # top X elites to evaluate
+        maze_params: dict[str, Any], # maze params to use
+        xml_file: str, # path to XML to use
+        env_seed: int, # seed for creating the simulation environment
+        seed: int | None,
+        use_saved_emitter_0: bool = False
+    ) -> None:
+
+    if (use_saved_emitter_0):
+        emitter = pickle.load(open(outdir / "emitter0.sav"))
+        df = ArchiveDataFrame(emitter.archive.data(return_type="pandas"))
+    else:
+        df = ArchiveDataFrame(pd.read_csv(outdir / "archive.csv"))
+
+    df_top = ArchiveDataFrame(df.sort_values(by="objective", ascending=False).head(num_to_sim))
+
+    video_folder = outdir / "videos"
+    video_folder.mkdir(parents=True, exist_ok=True)
+
+    # iterate through the top X elites, simulate them, and log stats
+    for idx, elite in enumerate(df_top.iterelites()):
+        model = elite["solution"]
+        archive_idx = df_top.index[idx]
+
+        reward, final_lin_vel, final_ang_vel, _ = simulate(model, maze_params, xml_file, env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
+        log.info(
+            "=== Index {} ===\n"
+            "Model:\n"
+            "{}\n"
+            "Reward: {}\n"
+            "Original Reward: {}\n"
+            "Final speeds (lin/ang): {} / {} \n"
+            "Original Final speeds: {}\n",
+            archive_idx,
+            model,
+            reward,
+            elite["objective"],
+            final_lin_vel, final_ang_vel,
+            elite["measures"]
+        )
+
+
+# NOTE: this is very very slow!
+# NOTE: this updates scheduler.result_archive by adding the simulated predicted elites in! Do not call until after you've exported/saved result_archive!
 def create_predicted_archive(
         solution_dim: int,
         archive_dims: list[int],
@@ -843,41 +788,33 @@ def create_predicted_archive(
     sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive.boundaries)
     log.info("Finished Predictive Map. Simulating...")
 
-    predicted_archive = GridArchive(
-                    solution_dim=solution_dim,
-                    dims=archive_dims,
-                    ranges=archive_ranges,
-                    seed=seed,
-                    qd_score_offset=maze_params["min_obj"],
-                )
-
     results = [simulate(model, maze_params, xml_file, env_seed) for model in sols]
     
     objs = []
     meas = []
     predicted_goal_reached_counter = 0
 
-    for obj, linear_vel, angular_vel, reached_goal in results:
+    for obj, linear_vel, min_rangefinder, reached_goal in results:
         objs.append(obj)
-        meas.append([linear_vel, angular_vel])
+        meas.append([linear_vel, min_rangefinder])
         if (reached_goal == True):
             predicted_goal_reached_counter += 1
 
-    predicted_archive.add(sols, objs, meas)
+    scheduler.result_archive.add(sols, objs, meas)
 
     # save, graphs, etc.
-    predicted_archive.data(return_type="pandas").to_csv(outdir / "predicted_archive.csv")
-    save_ccdf(predicted_archive, outdir / "predicted_archive_ccdf.png")
-    save_heatmap(predicted_archive, outdir / "predicted_archive_heatmap.png", maze_params["min_obj"])
+    scheduler.result_archive.data(return_type="pandas").to_csv(outdir / "obs_and_predicted_archive.csv")
+    save_ccdf(scheduler.result_archive, outdir / "obs_and_predicted_archive_ccdf.png")
+    save_heatmap(scheduler.result_archive, outdir / "obs_and_predicted_archive_heatmap.png", maze_params["min_obj"])
     log.info(
                 "=== Predicted Archive Stats ===\n"
                 "QD-Score: {}\n"
                 "Max Reward: {}\n"
                 "Coverage: {}\n"
-                "Reached Goal Counter: {}",
-                predicted_archive.stats.qd_score,
-                predicted_archive.stats.obj_max,
-                predicted_archive.stats.coverage,
+                "Predicted Elites Reached Goal Counter: {}",
+                scheduler.result_archive.stats.qd_score,
+                scheduler.result_archive.stats.obj_max,
+                scheduler.result_archive.stats.coverage,
                 predicted_goal_reached_counter
             )
 

@@ -28,6 +28,7 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export BLIS_NUM_THREADS=1
+export TORCH_NUM_THREADS=1
 
 eval "python3 dissertation/diss_script.py $ARGS"
 

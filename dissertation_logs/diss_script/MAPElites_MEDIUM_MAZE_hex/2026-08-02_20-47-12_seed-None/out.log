@@ -1,0 +1,27 @@
+2026-08-02 20:47:12.310 | INFO     | __main__:mujoco_main:672 - Saving outputs to: dissertation_logs/diss_script/MAPElites_MEDIUM_MAZE_hex/2026-08-02_20-47-12_seed-None
+2026-08-02 20:47:12.311 | INFO     | __main__:run_search:411 - > Starting search.
+
+2026-08-02 20:47:21.611 | INFO     | __main__:run_search:507 - > 1 itrs completed after 9.30 s
+  - Max Score: -13.739056966452347
+  - Archive Size: 5
+  - QD Score: 69.59072710941562
+  - Goal Reached Count: 0
+  - Archive Dims: [20 28]
+  - Alg Time: 0.60 s
+  - Sim Time: 8.70 s
+2026-08-02 20:47:52.619 | INFO     | __main__:run_search:507 - > 5 itrs completed after 40.31 s
+  - Max Score: -11.841705635570651
+  - Archive Size: 17
+  - QD Score: 238.1672918755715
+  - Goal Reached Count: 0
+  - Archive Dims: [20 28]
+  - Alg Time: 0.60 s
+  - Sim Time: 39.71 s
+2026-08-02 20:48:13.756 | INFO     | __main__:run_search:507 - > 9 itrs completed after 61.44 s
+  - Max Score: -11.841705635570651
+  - Archive Size: 27
+  - QD Score: 377.85169260419946
+  - Goal Reached Count: 0
+  - Archive Dims: [20 28]
+  - Alg Time: 0.60 s
+  - Sim Time: 60.84 s

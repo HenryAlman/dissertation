@@ -12,7 +12,7 @@ from ribs.archives import ArchiveBase, GridArchive
 from BOPE_emitter import CustomBayesianOptimizationEmitter
 from ribs.schedulers._scheduler import Scheduler
 
-
+# identical to base BayesianOptimizationScheduler
 class CustomBayesianOptimizationScheduler(Scheduler):
     """Similar to :class:`~Scheduler` but with support for upscaling archives.
 

@@ -1,0 +1,26 @@
+2026-08-02 19:12:32.479 | INFO     | __main__:mujoco_main:663 - Saving outputs to: dissertation_logs/diss_script/BOPElites_MEDIUM_MAZE_hex/2026-08-02_19-12-32_seed-None
+2026-08-02 19:12:32.519 | INFO     | __main__:run_search:404 - > Starting search.
+
+2026-08-02 19:12:47.463 | INFO     | __main__:run_search:499 - > 1 itrs completed after 14.94 s
+  - Max Score: -13.072616553885439
+  - Archive Size: 9
+  - QD Score: 124.6822313234791
+  - Goal Reached Count: 0
+  - Archive Dims: [5 5]
+  - Alg Time: 2.11 s
+  - Sim Time: 12.82 s
+2026-08-02 19:14:21.792 | INFO     | __main__:run_search:499 - > 2 itrs completed after 109.27 s
+  - Max Score: -13.072616553885439
+  - Archive Size: 10
+  - QD Score: 138.39151286923686
+  - Goal Reached Count: 0
+  - Archive Dims: [5 5]
+  - Alg Time: 96.10 s
+  - Sim Time: 13.15 s
+2026-08-02 19:14:22.658 | INFO     | __main__:create_predicted_archive:774 - Beginning Predictive Map
+2026-08-02 20:01:55.787 | INFO     | __main__:create_predicted_archive:776 - Finished Predictive Map. Simulating...
+2026-08-02 20:02:34.487 | INFO     | __main__:create_predicted_archive:796 - === Predicted Archive Stats ===
+QD-Score: 357.1488734430841
+Max Reward: -9.17634852913871
+Coverage: 0.044642857142857144
+Predicted Elites Reached Goal Counter: 0

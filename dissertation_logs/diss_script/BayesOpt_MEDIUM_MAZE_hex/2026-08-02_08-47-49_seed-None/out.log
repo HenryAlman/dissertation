@@ -1,0 +1,15 @@
+2026-08-02 08:47:49.751 | INFO     | __main__:mujoco_main:786 - Saving outputs to: dissertation_logs/diss_script/BayesOpt_MEDIUM_MAZE_hex/2026-08-02_08-47-49_seed-None
+2026-08-02 08:47:49.911 | INFO     | __main__:run_search:416 - > Starting search.
+
+2026-08-02 08:56:01.491 | INFO     | __main__:run_search:503 - > 1 itrs completed after 491.58 s
+  - Max Score: -0.6058388798135903
+  - Archive Size: 98
+  - QD Score: 1498.2889152597104
+  - Goal Reached Count: 0
+  - Archive Dims: [20 20]
+2026-08-02 08:57:45.998 | INFO     | __main__:run_search:503 - > 5 itrs completed after 596.09 s
+  - Max Score: -0.6058388798135903
+  - Archive Size: 102
+  - QD Score: 1559.4082161609035
+  - Goal Reached Count: 0
+  - Archive Dims: [20 20]

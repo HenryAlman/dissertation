@@ -7,12 +7,18 @@ from collections.abc import Collection
 
 import numpy as np
 from numpy.typing import ArrayLike
+import math
 import pandas as pd
 from scipy.stats import entropy, norm
 from scipy.stats.qmc import Sobol
-from sklearn.exceptions import ConvergenceWarning
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern
+import torch
+from botorch.models import SingleTaskGP
+from gpytorch.kernels import MaternKernel, ScaleKernel
+from gpytorch.priors import GammaPrior
+from gpytorch.mlls import ExactMarginalLogLikelihood
+from botorch.fit import fit_gpytorch_mll
+from botorch.acquisition import qLogExpectedImprovement
+from botorch.optim import optimize_acqf
 
 from ribs._utils import check_batch_shape, check_finite, validate_batch
 from ribs.archives import GridArchive, ArchiveDataFrame
@@ -20,69 +26,20 @@ from ribs.emitters._emitter_base import EmitterBase
 from ribs.typing import BatchData, Float, Int
 
 # Adapted from the pyribs BayesianOptimisationEmitter for BOPElites.
-# Matched what was possible from BOEmitter:
-# added n_restarts_optimiser
+# See notes in BO_emitter for the benefits of switching to BOTORCH.
+# Additional benefit for BOP: BOTORCH maintains different hyperparameters(lengthscales etc.)
+# for *each* of the outputs, whereas I believe sklearn uses the same one for them all.
 
-# ARD challenging because the same kernel is initialised over all three scikit learn internal GPs, and they'll have different length scales. 
-# This is one of two reasons a switch away from sklearn would be good here.
-# The other is the possibility for applying *length scale priors* to help with high-dimensional BO. This is now the standard in BOTORCH. See: https://arxiv.org/abs/2402.02229
+# RE: acquisition function, logic remains unchanged and we still use
+# pymoo Sobol+Pattern Search over GP posterior due to EJIE discontinuities 
+# at cell boundaries (rather than a BOTORCH LBFGS gradient-based optimiser.)
 
 # Additionally added functionality to use the trained GP to make predictions over a higher-res archive cell, using existing elites in main archive as warm starts.
 # NOTE: this is *very very time consuming* as it requires many iterations of predicting from the GP. Consider pickling and saving the emitter and doing it later, see main script.
 
-
-# TODO: make many of the choices made in the above parameters rather than hard coded.
+# TODO: many values are hardcoded when they should be args; low priority for experiment but if returning to this, fix
 
 class CustomBayesianOptimizationEmitter(EmitterBase):
-    """A sample-efficient emitter that models objective and measure functions with Gaussian process surrogate models.
-
-    Bayesian Optimisation is used to emit solutions that are predicted to have high
-    *Expected Joint Improvement of Elites* (EJIE) acquisition values. Refer to `Kent
-    2024 <https://ieeexplore.ieee.org/abstract/document/10472301>`_ for more
-    information.
-
-    .. note::
-
-        This emitter requires the `pymoo <https://pymoo.org>`_ package, which can be
-        installed with ``pip install pymoo`` or ``conda install pymoo``.
-
-    Args:
-        archive: An archive to use when creating and inserting solutions. Currently, the
-            only supported archive type is :class:`ribs.archives.GridArchive`.
-        bounds: Bounds of the solution space. This is a sequence of tuples, each of the
-            form ``(lower_bound, upper_bound)``. Unlike other emitters, either these
-            bounds or the ``lower_bounds``/``upper_bounds`` below must be provided since
-            SOBOL sampling is used.
-        lower_bounds: Instead of specifying ``bounds``, ``lower_bounds`` and
-            ``upper_bounds`` may be specified. This is useful if, for instance,
-            solutions are multi-dimensional. Here, pass an array specifying the lower
-            bounds of the solution space.
-        upper_bounds: Upper bounds of the solution space; see ``lower_bounds`` above.
-        search_nrestarts: Number of starting points for EJIE pattern search.
-        entropy_ejie: If ``True``, augments EJIE acquisition function with entropy to
-            encourage measure space exploration. Refer to Sec. 4.1 of `Kent 2023
-            <https://dl.acm.org/doi/10.1145/3583131.3590486>`_ for more details.
-        upscale_schedule: An array of increasing archive resolutions starting with
-            :attr:`archive.resolution` and ending with the user's intended final archive
-            resolution. This will upscale the archive to the next scheduled resolution
-            if every cell within the current archive has been filled, or the number of
-            evaluated solutions is more than twice :attr:`archive.cells`. If ``None``,
-            the archive will not be upscaled.
-        min_obj: The lowest possible objective value. Serves as the default objective
-            value within archive cells that have not been filled. Mainly used when
-            computing expected improvement.
-        num_initial_samples: The number of solutions that will be sampled from a Sobol
-            sequence as the first batch of training data for gaussian processes. Either
-            ``num_initial_samples`` or ``initial_solutions`` must be set.
-        initial_solutions: An (n, solution_dim) array of solutions to be used as the
-            first batch of training data for gaussian processes. Either
-            ``num_initial_samples`` or ``initial_solutions`` must be set.
-        batch_size: Number of solutions to return in :meth:`ask`. Must not exceed
-            ``search_nrestarts``. It is recommended to set this to 1 for sample
-            efficiency.
-        seed: Seed for the random number generator.
-    """
-
     def __init__(
         self,
         archive: GridArchive,
@@ -151,13 +108,6 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
 
         self._seed = seed
         self._sobol = Sobol(d=self.solution_dim, scramble=True, seed=self._seed)
-
-        # Initializes a multi-output GP. 1 output for objective function, plus 1
-        # output for each measure function
-        # NOTE: Using Matern kernal with default parameters
-        self._gp = GaussianProcessRegressor(
-            kernel=Matern(), normalize_y=True, n_targets=1 + self.measure_dim, n_restarts_optimizer=2
-        )
 
         if num_initial_samples is None and initial_solutions is None:
             raise ValueError(
@@ -528,9 +478,30 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
             (num_solutions, :attr:`archive.cells`) containing the predicted cell
             membership probabilities for each solution.
         """
-        mus, stds = self._gp.predict(
-            samples.reshape(-1, self.solution_dim), return_std=True
-        )
+        # convert samples to normalised, torch
+        samples_norm = self._normalise(samples)
+        torch_samples = torch.tensor(samples_norm.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu")
+        
+        # grab means and stddevs from normalised torch GP
+        self._gp.eval()
+        with torch.no_grad():
+            posterior = self._gp.posterior(torch_samples)
+            mus_torch = posterior.mean
+            stds_torch = posterior.stddev
+
+        # GP values were standardised, so need to unstandardise
+        mus_unnorm = mus_torch.clone()
+        stds_unnorm = stds_torch.clone()
+        mus_unnorm[:, 0] = mus_torch[:, 0] * self._obj_std + self._obj_mean
+        stds_unnorm[:, 0] = stds_torch[:, 0] * self._obj_std
+        mus_unnorm[:, 1] = mus_torch[:, 1] * self._mea0_std + self._mea0_mean
+        stds_unnorm[:, 1] = stds_torch[:, 1] * self._mea0_std
+        mus_unnorm[:, 2] = mus_torch[:, 2] * self._mea1_std + self._mea1_mean
+        stds_unnorm[:, 2] = stds_torch[:, 2] * self._mea1_std
+
+        # make numpy, pass to identical logic to the prior original sklearn version
+        mus = mus_unnorm.numpy()
+        stds = stds_unnorm.numpy()
 
         expected_improvements = self._get_expected_improvements(mus[:, 0], stds[:, 0])
 
@@ -555,55 +526,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         return ejie_by_cell, cell_probs
 
     def ask(self) -> np.ndarray:
-        """Returns solutions that are predicted to have high EJIE values.
-
-        If ``self._gp`` has not been trained on any data and ``self._initial_solutions``
-        is set, we return ``self._initial_solutions``, which was either provided by user
-        at emitter initialization or sampled from a Sobol sequence.
-
-        If ``self._gp`` has been trained on some data:
-
-        1. Samples :attr:`num_sobol_samples` SOBOL samples.
-        2. Computes the EJIE values for each sample, and keeps the top
-           :attr:`_search_nrestarts` samples with the largest EJIE values
-           and as starting points for pattern search.
-        3. Starts a pattern search instance for each starting point to
-           maximize their EJIE values.
-        4. After all pattern search instances have converged, checks if at
-           least :attr:`batch_size` samples with positive EJIE values have
-           been found. If not, increments :attr:`_overspec` and repeats the
-           process until at least :attr:`batch_size` solutions with positive
-           EJIE values have been found.
-        5. Returns the top :attr:`batch_size` solutions with the largest
-           EJIE values.
-
-        NOTE: This process has been simplified from the original implementation. The
-        following are the components that are in the BOP-Elites source codes but removed
-        here for simplicity:
-
-        1. `load_previous_points
-           <https://github.com/kentwar/BOPElites/blob/main/algorithm/BOP_Elites_UKD.py#L337>`_
-        2. `gen_elite_children
-           <https://github.com/kentwar/BOPElites/blob/ main/algorithm/BOP_Elites_UKD.py#L298>`_
-        3. We no longer restrict all starting points to be from unique cells. We
-           understand this might compromise performance a bit, but enforcing all
-           starting points from unique cells becomes messy in extreme cases when, for
-           example, our archive resolution is so low that the number of cells is smaller
-           than the number of starting points. Additionally, to my current
-           understanding, it is not guaranteed that starting points from unique cells
-           will result in higher optimized EJIE, because some cells might be easier to
-           improve than others.
-        4. We no longer explicitly add samples predicted to be in empty cells to the
-           starting point pool, since samples predicted to be in empty cells should
-           already have high EJIE.
-
-        Returns:
-            numpy.ndarray: Array of shape (:attr:`batch_size`, :attr:`solution_dim`)
-            containing the solutions with the largest EJIE values in descending EJIE
-            order.
-        """
         if self.num_evals == 0:
             return np.clip(self.initial_solutions, self.lower_bounds, self.upper_bounds)
+
         # pymoo minimizes so need to negate
         pymoo_problem = self._pymoo_mods["FunctionalProblem"](
             n_var=self.solution_dim,
@@ -757,15 +682,50 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
             (self._dataset["measures"], data["measures"])
         )
 
-        # Updates (actually re-trains) GP with updated dataset.
-        # sklearn occasionally raises LBFGS ConvergenceWarning, but this does
-        # not seem to impact BOP-Elites performance too much.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            self._gp.fit(
-                X=self._dataset["solution"],
-                y=np.hstack((self._dataset["objective"], self._dataset["measures"])),
-            )
+        # per BOTORCH best practice: (see https://botorch.readthedocs.io/en/stable/models.html#botorch.models.gp_regression.SingleTaskGP)
+        # normalise solutions to range 0-1
+        normalised_solutions = self._normalise(self._dataset["solution"])
+        X_train = torch.tensor(normalised_solutions, dtype=torch.float64, device="cpu")
+        # standardise y
+        Y_train_obj = torch.tensor(self._dataset["objective"], dtype=torch.float64, device="cpu")
+        standardised_Y_train_obj = (Y_train_obj - Y_train_obj.mean()) / (Y_train_obj.std() + 1e-8)
+        Y_train_mea_0 = torch.tensor(self._dataset["measures"][:,0], dtype=torch.float64, device="cpu")
+        standardised_Y_train_mea_0 = (Y_train_mea_0 - Y_train_mea_0.mean()) / (Y_train_mea_0.std() + 1e-8)
+        Y_train_mea_1 = torch.tensor(self._dataset["measures"][:,1], dtype=torch.float64, device="cpu")
+        standardised_Y_train_mea_1 = (Y_train_mea_1 - Y_train_mea_1.mean()) / (Y_train_mea_1.std() + 1e-8)
+
+        # store relevant values for unnormalising later when needed
+        self._best_standardised_fitness=standardised_Y_train_obj.max()
+        self._obj_mean, self._obj_std = Y_train_obj.mean(), Y_train_obj.std() + 1e-8
+        self._mea0_mean, self._mea0_std = Y_train_mea_0.mean(), Y_train_mea_0.std() + 1e-8
+        self._mea1_mean, self._mea1_std = Y_train_mea_1.mean(), Y_train_mea_1.std() + 1e-8
+
+        standardised_Y = torch.stack([standardised_Y_train_obj.squeeze(-1), standardised_Y_train_mea_0, standardised_Y_train_mea_1], dim=-1)
+
+        # use BOTORCH default, no explicit kernel/lengthscale,
+        # see notes at top of class.
+
+        # note: we use SingleTaskGP with separate independent outputs rather than MultiTaskGP
+        # (i.e. conditionally-dependent outputs). This is because:
+        # A) efficiency/scaling O(D * N^3) vs. O((D*N)^3), 
+        # B) it matches the sklearn approach used originally,
+        # and C) we aren't looking to predict fitness based on behavioural descriptors so dont need
+        # a shared/joint probability distribution between them.
+        # a ModelListGP may be more appropriate for a *design* problem where we want to be able to
+        # predict performance based on descriptors later, e.g. designing robot morphologies.
+
+        # also note: we instantiate a new GP (rather than condition_on_observation to add data and get a "fantasy model")
+        # see https://github.com/meta-pytorch/botorch/issues/533, https://github.com/meta-pytorch/botorch/discussions/2025 
+        self._gp = SingleTaskGP(
+            train_X=X_train,
+            train_Y=standardised_Y
+        )
+
+         # optimise GP parameters and fit it
+        mll = ExactMarginalLogLikelihood(self._gp.likelihood, self._gp)
+        fit_gpytorch_mll(mll, max_attempts=10) #TODO: make an arg
+
+        
         # Checks upscale conditions and upscales if needed
         # NOTE: BOP-Elites Algorithm 1 implements a slightly different upscale
         # condition, in which the archive upscale is triggered if either all
@@ -789,34 +749,59 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         return None
 
 
+    def _normalise(self, x):
+        return (x - self.lower_bounds) / (self.upper_bounds - self.lower_bounds)
+    
+    def _unnormalise(self, x_normalised):
+        torch_lower = torch.tensor(self.lower_bounds, dtype=torch.float64, device=("cpu"))
+        torch_upper = torch.tensor(self.upper_bounds, dtype=torch.float64, device=("cpu"))
+        return torch_lower + (torch_upper - torch_lower) * x_normalised
 
+
+    # WARNING: this is time consuming to run! It runs up to
+    # 3 * number of result_archive cells Pattern Searches!
     def get_predicted_elites(
         self,
-        archive_boundaries: list[int], # pass in the result_archive.boundaries here!
+        archive_boundaries, # pass in the result_archive.boundaries here!
     ) -> list[ArrayLike]:
 
         predicted_elites = []
-
-        # grab existing elites; we use these as a warm start for searching over the GP for elites for each cell
-        archive_dataframe = ArchiveDataFrame(self.archive.data(return_type="pandas"))
-        all_measures = np.array([elite["measures"] for elite in archive_dataframe.iterelites()])
-        all_solutions = np.array([elite["solution"] for elite in archive_dataframe.iterelites()])
         
         dim0_boundaries = archive_boundaries[0]
         dim1_boundaries = archive_boundaries[1]
 
-        termination = self._pymoo_mods["DefaultSingleObjectiveTermination"]()
+        # grab existing elites; we use these as a warm start for searching over the GP for elites for each cell
+        self.archive.retessellate((len(dim0_boundaries)-1, len(dim1_boundaries)-1))
+        archive_dataframe = ArchiveDataFrame(self.archive.data(return_type="pandas"))
+        all_measures = np.array([elite["measures"] for elite in archive_dataframe.iterelites()])
+        all_solutions = np.array([elite["solution"] for elite in archive_dataframe.iterelites()])
 
+        # define the max distance to try to reach a cell from. If we don't have an existing elite within this distance, we skip.
+        # somewhat arbitrarily setting this to 1/4 of the max distance possible (diagonal across the archive)
+        max_allowable_distance = math.sqrt(((dim0_boundaries[-1] - dim0_boundaries[0])**2 + (dim0_boundaries[-1] - dim0_boundaries[0])**2)) / 4
+        
+        termination = self._pymoo_mods["DefaultSingleObjectiveTermination"]()
 
         # define a mini problem to optimise the GP obj.
         # we add caching so we don't have to evaluate the GP repeatedly for a single X
-        # as it gets called for calcing fitness, calcing constraints, etc. etc.
+        # as it gets called repeatedly for calcing fitness, calcing constraints, etc. etc.
         def evaluate_gp(x):
             nonlocal _cached_x, _cached_prediction
             if _cached_x is not None and np.array_equal(x, _cached_x):
                 return _cached_prediction
-            
-            prediction = self._gp.predict(x.reshape(1, -1))[0]
+
+            x_norm = self._normalise(x)
+            torch_x = torch.tensor(x_norm.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu")
+
+            self._gp.eval()
+            with torch.no_grad():
+                posterior = self._gp.posterior(torch_x)
+                mu_torch = posterior.mean
+            mu_unnorm = mu_torch.clone()
+            mu_unnorm[:, 0] = mu_torch[:, 0] * self._obj_std + self._obj_mean
+            mu_unnorm[:, 1] = mu_torch[:, 1] * self._mea0_std + self._mea0_mean
+            mu_unnorm[:, 2] = mu_torch[:, 2] * self._mea1_std + self._mea1_mean
+            prediction=mu_unnorm[0].numpy()
             _cached_x = x.copy()
             _cached_prediction = prediction
             return _cached_prediction
@@ -827,7 +812,6 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                 _cached_x = None
                 _cached_prediction = None
 
-                # --- PYMOO FUNCTIONAL PROBLEM SETUP ---
                 pymoo_problem = self._pymoo_mods["FunctionalProblem"](
                     n_var=self.solution_dim,
                     objs=lambda x: -evaluate_gp(x)[0], # pymoo minimises, we want maximise so invert value
@@ -842,17 +826,23 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                 )
 
                 # warm start from either existing elite or closest elite (as defined by measure space)
+                # print(f"Predicting for cell: {dim0_boundaries[i-1]} to {dim0_boundaries[i]}, {dim1_boundaries[j-1]} to {dim1_boundaries[j]}")
                 cell_center = np.array([(dim0_boundaries[i-1] + dim0_boundaries[i])/2.0, (dim1_boundaries[j-1] + dim1_boundaries[j])/2.0])
                 occupied, elite_data = self.archive.retrieve_single(cell_center)
                 if (occupied):
                     x0 = elite_data["solution"]
+                    print("occupied found!")
                 else:
                     distances = np.linalg.norm(all_measures - cell_center, axis=1)
                     closest_idx = np.argmin(distances)
+                    if (distances[closest_idx] > max_allowable_distance):
+                        print("No valid elite in range. Skipping.")
+                        continue
                     x0 = all_solutions[closest_idx]
 
+                # TODO make args
                 restarts = 3
-                noise_scale = 0.03
+                noise_scale = 0.03 # TODO: should really scale with number of cells in archive, so we don't perturb out of the cell boundaries too much
                 best_solution = None
                 best_result_F = None
 
@@ -880,6 +870,11 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
 
                 if best_solution is not None:
                     predicted_elites.append(best_solution)
+                else:
+                    # if it fails to find a predicted improvement, take the existing elite if it sits within this cell (i.e. isn't a "closest" elite)
+                    print("No improvement found.")
+                    if(occupied):
+                        print("Adding existing elite.")
+                        predicted_elites.append(x0)
 
         return predicted_elites
-                    

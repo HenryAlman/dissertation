@@ -1,0 +1,3 @@
+2026-08-02 18:13:07.511 | INFO     | __main__:mujoco_main:654 - Saving outputs to: dissertation_logs/diss_script/BOPElites_MEDIUM_MAZE_hex/2026-08-02_18-13-07_seed-None
+2026-08-02 18:13:07.551 | INFO     | __main__:run_search:404 - > Starting search.
+

@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import warnings
@@ -9,9 +7,14 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.stats import entropy, norm
 from scipy.stats.qmc import Sobol
-from sklearn.exceptions import ConvergenceWarning
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, WhiteKernel
+import torch
+from botorch.models import SingleTaskGP
+from gpytorch.kernels import MaternKernel, ScaleKernel
+from gpytorch.priors import GammaPrior
+from gpytorch.mlls import ExactMarginalLogLikelihood
+from botorch.fit import fit_gpytorch_mll
+from botorch.acquisition import qLogExpectedImprovement
+from botorch.optim import optimize_acqf
 
 
 from ribs._utils import check_batch_shape, check_finite, validate_batch
@@ -21,11 +24,14 @@ from ribs.typing import BatchData, Float, Int
 
 # Adapted from the pyribs BayesianOptimisationEmitter for BOPElites.
 # - Functionally, removed unnecessary operations (e.g. upscaling, multi-output GP -> single-output GP), 
-# - redefined acquisition function to be standard Expected Improvement with jitter,
-# - changed kernel to use ARD. Initially added a small added WhiteKernel for noise but have commented out for now.
-# - added n_restarts_optimiser to the GP
+# - and switched to BOTORCH. BOTORCH:
+# - naturally uses a dimensionality-scaled prior on the kernel, see Vanilla Bayesian Optimization Performs Great in High Dimensions
+# - naturally incorporates ARD with the above
+# - naturally infers at least homoscedastic noise
+# - comes with built in support for using qLogExpectedImprovement instead of standard EI, which helps with vanishing gradients,
 
-# NOTE As noted in BOPE_emitter, we can't use lengthscale priors in sklearn, which is now the standard in BOTORCH and would be advantageous for high dimensions. See: https://arxiv.org/abs/2402.02229
+# TODO:  potential improvements: using HeteroskedasticSingleTaskGP and qLogNoisyExpectedImprovement to handle the variance of maze sims
+# i.e. that a small parameter change can cause a collision, drastically changing fitness etc. Would need testing though.
 
 # TODO: make many of the choices made in the above parameters rather than hard coded.
 
@@ -43,23 +49,6 @@ class BOEmitter(EmitterBase):
         batch_size: Int = 1,
         seed: Int | None = None,
     ) -> None:
-        try:
-            # pylint: disable = import-outside-toplevel
-            from pymoo.algorithms.soo.nonconvex.pattern import PatternSearch
-            from pymoo.optimize import minimize
-            from pymoo.problems.functional import FunctionalProblem
-            from pymoo.termination.default import DefaultSingleObjectiveTermination
-        except ImportError as e:
-            raise ImportError(
-                "pymoo must be installed -- please run `pip install pymoo` "
-                "or `conda install pymoo`"
-            ) from e
-        self._pymoo_mods = {
-            "PatternSearch": PatternSearch,
-            "minimize": minimize,
-            "FunctionalProblem": FunctionalProblem,
-            "DefaultSingleObjectiveTermination": DefaultSingleObjectiveTermination,
-        }
 
         if bounds is None and lower_bounds is None and upper_bounds is None:
             raise ValueError(
@@ -85,29 +74,6 @@ class BOEmitter(EmitterBase):
 
         self._seed = seed
         self._sobol = Sobol(d=self.solution_dim, scramble=True, seed=self._seed)
-
-        # Initializes a GP over objective function, with ARD Matern kernel.
-        dimension_ranges = upper_bounds - lower_bounds
-        dimensions = len(dimension_ranges)
-        init_length_scales = dimension_ranges /4
-        length_scale_bounds = list(zip(0.2 * dimension_ranges, 3.0 * dimension_ranges))
-        self._kernel=Matern(length_scale=init_length_scales,
-                      length_scale_bounds=length_scale_bounds,
-                      nu=2.5
-                )
-        """ 
-        + WhiteKernel(
-                        noise_level=1e-4,
-                        noise_level_bounds=(1e-6, 1e-1)
-        )
-        """
-        self._gp = GaussianProcessRegressor(
-            kernel=self._kernel, 
-            alpha = 1e-10,
-            normalize_y=True, 
-            n_targets=1,
-            n_restarts_optimizer=2
-        )
 
         if num_initial_samples is None and initial_solutions is None:
             raise ValueError(
@@ -221,90 +187,36 @@ class BOEmitter(EmitterBase):
         return rescaled_samples
         
 
-    def _get_ei_values(
-            self, 
-            samples: np.ndarray
-        ) -> np.ndarray:
-
-        mus, stds = self._gp.predict(
-            samples.reshape(-1, self.solution_dim), return_std=True
-        )
-
-        # jitter parameter; higher = more exploration, less exploitation
-        # https://krasserm.github.io/2018/03/21/bayesian-optimization/
-        # we decrease calculated improvements by the jitter value (which scales down with range of rewards so far)
-        # this means it's larger early, when we want to explore more, but becomes smaller (i.e. we become more exploitation-driven)
-        # as our fitnesses improve. However, default minimum value of 0.01 means we always at least bias *slightly* to a bit of exploration.
-        # which might help a little to avoid local minima.
-        all_objs = self._dataset["objective"]
-        best_obj = np.max(all_objs)
-        worst_obj = np.min(all_objs)
-        jitter = np.maximum(0.1 / (best_obj - worst_obj), 0.05)
-        # mathematical example: very early on, say best_obj-worst_obj=1 metre.
-        # predicted fitness (mu) must be 0.1m higher than our current best to be considered an "actual" improvement, otherwise we push it negative
-        # the lowest this drops is 0.05, i.e. 50 centimetres.
-        # so this is a fairly small bias 
-
-        stds = np.maximum(stds, 1e-9) # extremely small value at least to avoid divide by zero error
-        improvements = mus - best_obj - jitter
-        zs = improvements / stds
-
-        eis = improvements * norm.cdf(zs) + stds * norm.pdf(zs)
-        eis = np.maximum(eis, 0.0)
-
-        return eis, mus, stds
-
     def ask(self) -> np.ndarray:
-        
+        # first run only: grab sobol points
         if self.num_evals == 0:
             return np.clip(self.initial_solutions, self.lower_bounds, self.upper_bounds)
-        # pymoo minimizes so need to negate
-        pymoo_problem = self._pymoo_mods["FunctionalProblem"](
-            n_var=self.solution_dim,
-            objs=lambda x: -self._get_ei_values(x)[0],
-            xl=self.lower_bounds,
-            xu=self.upper_bounds,
+
+        # define acquisition function - in this case we use qLogEI
+        # a recommended improvement over EI which helps avoid vanishing gradient issues
+        # note we use "q" version to support batching!
+        # potential future improvement as noted at top would be incorporating qLogNoiseExpectedImprovement
+        # to handle noisy domains
+        acq_func = qLogExpectedImprovement(
+            model=self._gp,
+            best_f=self._best_standardised_fitness
         )
 
-        termination = self._pymoo_mods["DefaultSingleObjectiveTermination"]()
+        candidates, acq_value = optimize_acqf(
+            acq_function=acq_func,
+            # we normalised the X and Y data going into the GP, so we search from 0 to 1
+            bounds=torch.stack([torch.zeros(self._solution_dim), torch.ones(self._solution_dim)]).to(device="cpu", dtype=torch.float64),
+            q=self._batch_size,
+            num_restarts=self._search_nrestarts,
+            raw_samples=self.num_sobol_samples
+        )
 
-        optimization_outcomes = {
-            "optimized_samples": [],
-            "optimized_eis": []
-        }
-        while len(optimization_outcomes["optimized_samples"]) < self.batch_size:
-            samples = self._sample_n_rescale(self.num_sobol_samples)
-            starting_eis, mus, stds = self._get_ei_values(samples)
-
-            search_starting_points = samples[
-                np.argsort(starting_eis)[
-                    (-self._search_nrestarts) :
-                ]
-            ]
-
-            for x0 in search_starting_points:
-                optimizer = self._pymoo_mods["PatternSearch"](x0=x0)
-
-                # Note: Using default pymoo minimize, PatternSearch, and
-                # termination.
-                result = self._pymoo_mods["minimize"](
-                    problem=pymoo_problem,
-                    algorithm=optimizer,
-                    termination=termination,
-                    copy_algorithm=False,
-                    seed=self._seed,
-                )
-
-                optimization_outcomes["optimized_samples"].append(result.X)
-                optimization_outcomes["optimized_eis"].append(self._get_ei_values(result.X)[0].squeeze())
+        unnormalised_candidates = []
+        for candidate in candidates:
+            # and now need to unnormalise them before returning
+            unnormalised_candidates.append(self._unnormalise(candidate).numpy())
         
-        optimized_samples = np.array(optimization_outcomes["optimized_samples"])
-        optimized_eis = np.array(optimization_outcomes["optimized_eis"])
-
-        # identify best [batch_size] solutions
-        sorted_idx = np.argsort(optimized_eis)[::-1][: self.batch_size]
-
-        return optimized_samples[sorted_idx]
+        return np.array(unnormalised_candidates)
 
     def tell(
         self,
@@ -336,13 +248,36 @@ class BOEmitter(EmitterBase):
             (self._dataset["measures"], data["measures"])
         )
 
-        # Updates (actually re-trains) GP with updated dataset.
-        # sklearn occasionally raises LBFGS ConvergenceWarning, but this does
-        # not seem to impact BOP-Elites performance too much.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            self._gp.fit(
-                X=self._dataset["solution"],
-                y=self._dataset["objective"]
-            )
+        # per BOTORCH best practice: (see https://botorch.readthedocs.io/en/stable/models.html#botorch.models.gp_regression.SingleTaskGP)
+        # normalise solutions to range 0-1
+        normalised_solutions = self._normalise(self._dataset["solution"])
+        X_train = torch.tensor(normalised_solutions, dtype=torch.float64, device="cpu")
+        Y_train = torch.tensor(self._dataset["objective"], dtype=torch.float64, device="cpu")
+        # standardise y
+        standardised_Y = (Y_train - Y_train.mean()) / (Y_train.std() + 1e-8)
+        self._best_standardised_fitness=standardised_Y.max()
+
+        # use BOTORCH default, no explicit kernel/lengthscale,
+        # as they implemented findings from Vanilla Bayesian Optimization Performs Great in High Dimensions
+        # and they infer homoscedastic noise as a default as well
+        self._gp = SingleTaskGP(
+            train_X=X_train,
+            train_Y=standardised_Y
+        )
+
+        # optimise GP parameters and fit it
+        mll = ExactMarginalLogLikelihood(self._gp.likelihood, self._gp)
+        fit_gpytorch_mll(mll, max_attempts=10) #TODO: make an arg
+
         return None
+
+
+    # utils for converting between GP normalised data, 
+    # and unnormalised data we need elsewhere (e.g. to return in ask())
+    def _normalise(self, x):
+        return (x - self.lower_bounds) / (self.upper_bounds - self.lower_bounds)
+
+    def _unnormalise(self, x_normalised):
+        torch_lower = torch.tensor(self.lower_bounds, dtype=torch.float64, device=("cpu"))
+        torch_upper = torch.tensor(self.upper_bounds, dtype=torch.float64, device=("cpu"))
+        return torch_lower + (torch_upper - torch_lower) * x_normalised
