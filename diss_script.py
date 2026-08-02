@@ -33,7 +33,7 @@ import imageio
 
 # libs
 import fire # cmd line parameter/arguments for main
-import psutil # TODO: tracking single-threadedness, test only
+#import psutil # TODO: tracking single-threadedness, test only
 from numpy.typing import ArrayLike
 import pandas as pd
 import gymnasium as gym
