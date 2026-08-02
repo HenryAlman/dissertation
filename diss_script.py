@@ -391,7 +391,7 @@ def create_scheduler(
                 entropy_ejie=algorithm_params["entropy_ejie"], # bool, whether to use entropy variant of EJIE
                 upscale_schedule=algorithm_params["upscale_schedule"], # list[tuple[int,int]] of successively more granular archive dims
                 min_obj=qd_score_offset, # precalculated minimum objective per maze; needed to evaluate expected improvement for empty cells in archive when calculating EJIE acquisition value
-                num_initial_samples=10, #TODO: restore! 10*solution_dim,# from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf.
+                num_initial_samples=10*solution_dim,# from BOP-Elites paper here: https://inria.hal.science/hal-04537563/file/main.pdf.
                 batch_size=batch_size,
                 seed=s,
             )
@@ -663,7 +663,7 @@ def mujoco_main(
             Path("dissertation_logs")
             / Path(__file__).stem
             / f"{algorithm}_{maze_str}_{xml_str}"
-            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{random.randint(1000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
+            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{random.randint(10000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
         )
         if outdir is None
         else Path(outdir)
@@ -715,6 +715,7 @@ def mujoco_main(
 
 
 # debug tool to test if single-threadedness is working
+"""
 def assert_single_threaded():
     current_process = psutil.Process(os.getpid())
     
@@ -726,7 +727,7 @@ def assert_single_threaded():
         print(f"CPU usage: {cpu_usage:.1f}%")
     else:
         print(f"Single-threaded, active OS threads: {thread_count}")
-
+"""
 
 def run_evaluation(
         outdir: Path, # directory containing archive.csv to run evaluations on
