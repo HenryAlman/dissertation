@@ -1,6 +1,6 @@
 <mujoco>
     <size njmax="3000" nconmax="1000"/>
-    <compiler angle="radian" meshdir="/home/henry/PythonDissertation/meshes" autolimits="true" />
+    <compiler angle="radian" meshdir="/users/40795510/sharedscratch/dissertation/meshes" autolimits="true" />
     <option integrator="RK4" timestep="0.004"/>
     <statistic meansize="0.23" extent="3.96"/>
     <default>
