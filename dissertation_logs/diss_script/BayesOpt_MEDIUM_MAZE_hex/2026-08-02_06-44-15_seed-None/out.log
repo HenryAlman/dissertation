@@ -1,3 +1,0 @@
-2026-08-02 06:44:15.955 | INFO     | __main__:mujoco_main:779 - Saving outputs to: dissertation_logs/diss_script/BayesOpt_MEDIUM_MAZE_hex/2026-08-02_06-44-15_seed-None
-2026-08-02 06:44:16.472 | INFO     | __main__:run_search:407 - > Starting search.
-

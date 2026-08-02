@@ -1,9 +1,0 @@
-2026-08-02 15:28:54.503 | INFO     | __main__:mujoco_main:786 - Saving outputs to: dissertation_logs/diss_script/BOPElites_MEDIUM_MAZE_hex/2026-08-02_15-28-54_seed-None
-2026-08-02 15:28:54.542 | INFO     | __main__:run_search:416 - > Starting search.
-
-2026-08-02 15:29:32.355 | INFO     | __main__:run_search:503 - > 1 itrs completed after 37.81 s
-  - Max Score: -10.342405999657199
-  - Archive Size: 19
-  - QD Score: 265.5916543934554
-  - Goal Reached Count: 0
-  - Archive Dims: [5 5]
