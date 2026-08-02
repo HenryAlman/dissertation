@@ -35,6 +35,7 @@ import imageio
 import fire # cmd line parameter/arguments for main
 #import psutil # TODO: tracking single-threadedness, test only
 from numpy.typing import ArrayLike
+from numpy import random
 import pandas as pd
 import gymnasium as gym
 import gymnasium_robotics
@@ -662,7 +663,7 @@ def mujoco_main(
             Path("dissertation_logs")
             / Path(__file__).stem
             / f"{algorithm}_{maze_str}_{xml_str}"
-            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{np.randint(1000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
+            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{random.randint(1000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
         )
         if outdir is None
         else Path(outdir)
