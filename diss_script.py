@@ -577,16 +577,16 @@ def run_search(
 def mujoco_main(
     algorithm: str = "MAPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
     #TODO: return this to empty dict string thing when uploading to cluster
-    algorithm_params = {"sigma0":0.1}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
+    algorithm_params = "{}", # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     env_seed: int = 52, # seed for creating the simulation environment
-    time_to_run: int = 60, # seconds to run for
+    time_to_run: int = 60, # seconds to run for, default 60 to avoid costly mistakes!
     log_freq: int = 5, # log metrics every X iterations
     n_emitters: int = 1, # number of emitters to use
     batch_size: int = 5, # number of samples to take for simulation at each iteration (per emitter!)
-    # NOTE: while batch size = 1 is best for sample efficiency, a higher batch count can be better for wall-clock time. See (and [80, 143]): https://www.cs.ox.ac.uk/people/nando.defreitas/publications/BayesOptLoop.pdf
+    # NOTE: while batch size = 1 is best for sample efficiency, a higher batch count can be better for wall-clock time. See parallelisation at (and [80, 143]): https://www.cs.ox.ac.uk/people/nando.defreitas/publications/BayesOptLoop.pdf
     seed: int | None = None, # seed for emitters/archives/etc. to use for sampling/randomness
     outdir: str | None = None, # directory to which to save outputs (if running search) - and read archive and create videos of solutions (if running eval)
     run_eval: bool = False, # set true and provide outdir to eval and create videos of existing archive elites
