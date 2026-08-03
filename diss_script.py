@@ -81,13 +81,11 @@ def simulate(
     env = MujocoEnvWrapper(base_env, max_episode_steps)
     
     total_reward = 0.0
-    #measures:
+    #characteristics we track for interest:
     linear_x_velocities = []
     linear_y_velocities = []
     min_front_rangefinder = maze_max_dist
-    #not a measure, but we also return the final position
-    # we can use this to construct a heatmap of where each elite ended up,
-    # helping us to see the effect of deception
+    #measures:
     final_x_pos = 0
     final_y_pos = 0
     reached_goal = False
@@ -114,6 +112,8 @@ def simulate(
         w_cpg = model[0]
         w_locomotion = model[1:-4]
         w_locomotion = w_locomotion.reshape(10, 2)
+        w_locomotion_hip = w_locomotion[:,0]
+        w_locomotion_knee = w_locomotion[:,1]
         w_hip_centresensor, w_ankle_centresensor, w_hip_sensordiff, w_ankle_sensordiff = model[-4:]
 
         # initialise CPG start state, RBFs placed equilaterally around circle, phase gaits, and torque sign masks
@@ -217,7 +217,7 @@ def simulate(
         # rangefinders return -1 return if hit nothing; we want this to engender behaviour like a far away wall, not a close wall,
         # so for any -1 returns we instead set to the maze_max_dist
         rangefinders_data[rangefinders_data == -1.0] = maze_max_dist
-        # save measure after doing that flip, otherwise min_rangefinder will be -1 for those who didn't hit anything
+        # save after doing that flip, otherwise min_rangefinder will be -1 for those who didn't hit anything at any point
         if (rangefinders_data[1] < min_front_rangefinder):
             min_front_rangefinder = rangefinders_data[1]
         # we then shift so close walls send strong signal (1) while far walls send a weak signal (0)
@@ -254,23 +254,35 @@ def simulate(
             # for each leg, get rotated cpg state per its phase in gait_phases
             leg_gait_torques = []
             for i in range(len(gait_phases)):
-                rotated_cpg = np.dot(rotation_matrices[i], cpg_state)
+                rotated_cpg_hip = np.dot(rotation_matrices[i], cpg_state)
                 # calc RBF activations based on distance b/w them and rotated cpg
-                distances = np.linalg.norm(rbf_centers - rotated_cpg, axis=1)
-                rbf_activations = np.exp(- (distances**2) / (2 * (rbf_sigma**2)))
-                leg_torque = np.dot(rbf_activations, w_locomotion)
-                leg_gait_torques.extend(leg_torque)
+                distances_hip = np.linalg.norm(rbf_centers - rotated_cpg_hip, axis=1)
+                rbf_activations_hip = np.exp(- (distances_hip**2) / (2 * (rbf_sigma**2)))
+                hip_torque = np.dot(rbf_activations_hip, w_locomotion_hip)
+
+                #force knee to lag 1/4 cycle
+                #90 degree counterclockwise rotation is same as x = y, y = -x
+                rotated_cpg_knee = np.array([rotated_cpg_hip[1], -rotated_cpg_hip[0]])
+                distances_knee = np.linalg.norm(rbf_centers - rotated_cpg_knee, axis=1)
+                rbf_activations_knee = np.exp(- (distances_knee**2) / (2 * (rbf_sigma**2)))
+                knee_torque = np.dot(rbf_activations_knee, w_locomotion_knee)
+
+                leg_gait_torques.extend([hip_torque, knee_torque])
 
             virtual_gait_torques = np.array(leg_gait_torques)
 
             # steering signal swings positive/negative, and size of signal changes, depending on whether 
             # left or right is closer (and by how much)
             left_right_differential = rangefinders[0] - rangefinders[2]
-            sensor_vector = np.array([rangefinders[1], left_right_differential])
-            # combine with front sensor, and map to sensor torque modifiers via sensormap
-            virtual_steering_torques = np.dot(sensor_reflex_map, sensor_vector)
+            # combine with front sensor, and map to reflex
+            sensors = np.array([rangefinders[1], left_right_differential])
+            sensor_reflex = np.dot(sensor_reflex_map, sensors)
+            # shift upwards so ranges around 1.0 (i.e. don't change anything from normal cpg) 
+            # rather than 0.0 (don't *do* anything b/c 0 * cpg = 0)
+            # clip to 0.2 to 1.8 so we amplify/dampen by 80% max
+            sensor_multipliers = np.clip(1.0 + sensor_reflex, 0.2, 1.8)
 
-            virtual_torques = virtual_gait_torques + virtual_steering_torques
+            virtual_torques = virtual_gait_torques * sensor_multipliers
             xml_torques = virtual_torques * sign_mask
 
             # pass through tanh activation function
@@ -296,14 +308,14 @@ def simulate(
 
     env.close() # must close env after every sim!
 
-    # measure: average of the xy-plane velocities
+    # characteristic: average of the xy-plane velocities
     avg_forward_vel = np.mean(np.sqrt(np.array(linear_x_velocities)**2 + np.array(linear_y_velocities)**2))
 
     if (record_video):
         path = str(record_outdir / f'videos/{record_video_idx}.mp4')
         imageio.mimsave(path, frames, fps=30)
 
-    return total_reward, avg_forward_vel, min_front_rangefinder, final_x_pos, final_y_pos, reached_goal
+    return total_reward, final_x_pos, final_y_pos, avg_forward_vel, min_front_rangefinder, reached_goal
 
 
 def create_scheduler(
@@ -332,7 +344,7 @@ def create_scheduler(
             ranges=ranges,
             seed=seed,
             qd_score_offset=qd_score_offset,
-            extra_fields={"pos": ((2,), np.float64)}
+            extra_fields={"chars": ((2,), np.float64)} # store other characteristics as well
         )
 
     # for MAP/Bayes, this is only archive. For BOP, it's the "result archive" at the intended final dimensionality
@@ -342,7 +354,7 @@ def create_scheduler(
         ranges=ranges,
         seed=seed,
         qd_score_offset=qd_score_offset,
-        extra_fields={"pos": ((2,), np.float64)}
+        extra_fields={"chars": ((2,), np.float64)} # store other characteristics as well
     )
 
     # Seeds for emitters - note None means a random one is generated.
@@ -360,8 +372,6 @@ def create_scheduler(
                 sigma=algorithm_params["sigmas"], # standard deviation for Gaussian mutation/sampling per dimension
                 lower_bounds=lower_bounds,
                 upper_bounds=upper_bounds,
-                #lower_bounds=np.full(solution_dim, -1), # lower bounds on each dimension of the solution (i.e. weight/bias)
-                #upper_bounds=np.full(solution_dim, 1), # lower bounds on each dimension of the solution (i.e. weight/bias)
                 batch_size=batch_size, # number of samples to take for simulation at each iteration
                 seed=s,
             )
@@ -486,7 +496,7 @@ def run_search(
         alg_time += time.time() - loop_time
 
         # Evaluate the models and record the objectives and measures.
-        objs, meas, pos = [], [], []
+        objs, meas, chars = [], [], []
         
         loop_time = time.time()
         # Simulate suggested models/parameters
@@ -494,16 +504,16 @@ def run_search(
         sim_time += time.time() - loop_time
 
         # Process the results.
-        for obj, linear_vel, min_rangefinder, final_x_pos, final_y_pos, reached_goal in results:
+        for obj, final_x_pos, final_y_pos, lin_vel, min_rangefinder, reached_goal in results:
             objs.append(obj)
-            meas.append([linear_vel, min_rangefinder])
-            pos.append([final_x_pos, final_y_pos])
+            meas.append([final_x_pos, final_y_pos])
+            chars.append([lin_vel, min_rangefinder])
             if (reached_goal):
                 goal_reached_counter += 1
 
         loop_time = time.time() 
         # Send the results back to the scheduler. It will pass them onto each emitter.
-        scheduler.tell(objs, meas, pos=pos)
+        scheduler.tell(objs, meas, chars=chars)
         alg_time += time.time() - loop_time
 
         #assert_single_threaded() #TODO: temp debug
@@ -598,10 +608,10 @@ def mujoco_main(
         maze_options = { "goal_cell": np.array([1, 4], dtype=int),
                         "reset_cell": np.array([3, 1], dtype=int)
                         }
-        maze_max_dist = 23.0
-        min_obj = -17.0
-        archive_dims = [20, int(maze_max_dist)]
-        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
+        maze_max_dist = 23.0 # approx max rangefinder dist possible
+        min_obj = -17.0 # approx max distance from goal
+        archive_dims = [20, 12]
+        archive_ranges = [(-10.0, 10.0), (-6.0, 6.0)]
     elif (maze_str == "U_MAZE"):
         maze = U_MAZE
         max_episode_steps = 1800
@@ -610,8 +620,8 @@ def mujoco_main(
                         }
         maze_max_dist = 12.0
         min_obj = -14.0
-        archive_dims = [20, int(maze_max_dist)]
-        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
+        archive_dims = [15, int(maze_max_dist)]
+        archive_ranges = [(-6, 6), (-6, 6)]
     elif (maze_str == "MEDIUM_MAZE"):
         maze = MEDIUM_MAZE
         max_episode_steps = 3000
@@ -620,8 +630,8 @@ def mujoco_main(
                         }
         maze_max_dist = 28.0
         min_obj = -28.0
-        archive_dims = [20, int(maze_max_dist)]
-        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
+        archive_dims = [28, 28]
+        archive_ranges = [(-14, 14), (-14, 14)]
     elif (maze_str == "LARGE_MAZE"):
         maze = LARGE_MAZE
         max_episode_steps = 4000
@@ -630,8 +640,8 @@ def mujoco_main(
                         }
         maze_max_dist = 40.0
         min_obj = -35.0
-        archive_dims = [20, int(maze_max_dist)]
-        archive_ranges = [(0, 1.0), (0, maze_max_dist)]
+        archive_dims = [44, 28]
+        archive_ranges = [(-22, 22), (-14, 14)]
     else:
         raise ValueError("Unknown map!")
 
@@ -695,7 +705,7 @@ def mujoco_main(
             Path("dissertation_logs")
             / Path(__file__).stem
             / f"{algorithm}_{maze_str}_{xml_str}"
-            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{random.randint(10000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
+            / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{random.randint(100000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
         )
         if outdir is None
         else Path(outdir)
@@ -780,27 +790,27 @@ def run_evaluation(
     df_top = ArchiveDataFrame(df.sort_values(by="objective", ascending=False).head(num_to_sim))
 
     video_folder = outdir / "videos"
-    video_folder.mkdir(parents=True, exist_ok=True)
+    video_folder.mkdir(parents=True, exist_ok=True) # will overwrite existing videos!
 
     # iterate through the top X elites, simulate them, and log stats
     for idx, elite in enumerate(df_top.iterelites()):
         model = elite["solution"]
         archive_idx = df_top.index[idx]
 
-        reward, final_lin_vel, final_ang_vel, _, _, _ = simulate(model, maze_params, xml_file, env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
+        reward, final_x_pos, final_y_pos, _, _, _ = simulate(model, maze_params, xml_file, env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
         log.info(
             "=== Index {} ===\n"
             "Model:\n"
             "{}\n"
             "Reward: {}\n"
             "Original Reward: {}\n"
-            "Final speeds (lin/ang): {} / {} \n"
-            "Original Final speeds: {}\n",
+            "Final x/y pos: {} / {} \n"
+            "Original Final pos: {}\n",
             archive_idx,
             model,
             reward,
             elite["objective"],
-            final_lin_vel, final_ang_vel,
+            final_x_pos, final_y_pos,
             elite["measures"]
         )
 
@@ -819,24 +829,24 @@ def create_predicted_archive(
         outdir: Path,
 ) -> None:
     log.info("Beginning Predictive Map")
-    sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive.boundaries)
+    sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive.boundaries, outdir)
     log.info("Finished Predictive Map. Simulating...")
 
     results = [simulate(model, maze_params, xml_file, env_seed) for model in sols]
     
     objs = []
     meas = []
-    pos = []
+    chars = []
     predicted_goal_reached_counter = 0
 
-    for obj, linear_vel, min_rangefinder, final_x_pos, final_y_pos, reached_goal in results:
+    for obj, final_x_pos, final_y_pos, lin_vel, min_rangefinder, reached_goal in results:
         objs.append(obj)
-        meas.append([linear_vel, min_rangefinder])
-        pos.append([final_x_pos, final_y_pos])
+        meas.append([final_x_pos, final_y_pos])
+        chars.append([lin_vel, min_rangefinder])
         if (reached_goal == True):
             predicted_goal_reached_counter += 1
 
-    scheduler.result_archive.add(sols, objs, meas, pos=pos)
+    scheduler.result_archive.add(sols, objs, meas, chars=chars)
 
     # save, graphs, etc.
     scheduler.result_archive.data(return_type="pandas").to_csv(outdir / "obs_and_predicted_archive.csv")

@@ -31,29 +31,27 @@ class MujocoEnvWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        #print(info)
         success = False
         mujoco_data = self.env.unwrapped.data
 
         # default reward is e^-(distance^2). This transforms it into just -distance.
         # note the * 4.0 turns it into a metre distance based on default 4.0 maze_scaling for AntMaze
-        # rather than a "cell distance"
-        # note we also add 2.
+        # rather than a "cell distance". Note we also add 4.
         # Some of the models like hexapod are quite large, the qpos tracks its central position only
-        # so this effectively means that if the *robot center gets within cell width of the goal* its a success with a score of 0
-        reward = -math.sqrt(-math.log(reward)) * 4.0 + 2.0
+        reward = -math.sqrt(-math.log(reward)) * 4.0 + 4
 
-        # measures
-        linear_x_velocity = mujoco_data.qvel[0]
-        linear_y_velocity = mujoco_data.qvel[1]
-
-        # additional field for final position to heatmap it later
-        x_pos = mujoco_data.qpos[0]
-        y_pos = mujoco_data.qpos[1]
-        
-        # if within 2m (1/2 of a cell), count goal as reached
-        if (reward >= 0.0): 
+        if (reward > -0.2): # this was just tuned to "seem right" when robot got visibly within reach of goal
             success = True # track that goal was reached and return it
             terminated = True # terminate if goal reached
+
+        # measures
+        x_pos = mujoco_data.qpos[0]
+        y_pos = mujoco_data.qpos[1]
+
+        # also return so we can calc avg lin velocity for posterity
+        linear_x_velocity = mujoco_data.qvel[0]
+        linear_y_velocity = mujoco_data.qvel[1]
 
         # terminate if the torso falls over
         upright_alignment = mujoco_data.xmat[self.torso_id][8]

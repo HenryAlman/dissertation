@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Collection
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -763,6 +764,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
     def get_predicted_elites(
         self,
         archive_boundaries, # pass in the result_archive.boundaries here!
+        outdir: Path
     ) -> list[ArrayLike]:
 
         predicted_elites = []
@@ -842,7 +844,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
 
                 # TODO make args
                 restarts = 3
-                noise_scale = 0.03 # TODO: should really scale with number of cells in archive, so we don't perturb out of the cell boundaries too much
+                noise_scale = 0.02 # TODO: should really scale with number of cells in archive, so we don't perturb out of the cell boundaries too much
                 best_solution = None
                 best_result_F = None
 
@@ -870,11 +872,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
 
                 if best_solution is not None:
                     predicted_elites.append(best_solution)
-                else:
-                    # if it fails to find a predicted improvement, take the existing elite if it sits within this cell (i.e. isn't a "closest" elite)
-                    #print("No improvement found.")
-                    if(occupied):
-                        #print("Adding existing elite.")
-                        predicted_elites.append(x0)
 
+        save_loc = str(outdir / "predicted_elites.npy")
+        np.save(save_loc, predicted_elites)
         return predicted_elites

@@ -17,8 +17,8 @@ def save_heatmap(archive: GridArchive, filename: str | Path, min_obj: int | floa
     """
     fig, ax = plt.subplots(figsize=(8, 6))
     grid_archive_heatmap(archive, vmin=min_obj, vmax=0, ax=ax)
-    ax.set_ylabel("Min. front rangefinder")
-    ax.set_xlabel("Average xy-speed")
+    ax.set_ylabel("Final Y Position")
+    ax.set_xlabel("Final X Position")
     fig.savefig(filename)
 
 
@@ -77,7 +77,7 @@ def save_ccdf(archive: ArchiveBase, filename: str | Path) -> None:
     fig, ax = plt.subplots()
     ax.hist(
         archive.data("objective"),
-        50,  # Number of cells.
+        50,  # Number of bins.
         histtype="step",
         density=False,
         cumulative=-1,  # CCDF rather than CDF.
