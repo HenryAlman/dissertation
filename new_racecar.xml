@@ -146,17 +146,15 @@
     <exclude name="right_body" body1="torso" body2="right_front_wheel" />
   </contact>
   <actuator>
-    <velocity name="diff_ring" joint="diff_ring" forcerange="-1000 1000" kv="20" ctrlrange="-30 30" ctrllimited="true"/>
+    <velocity name="diff_ring" joint="diff_ring" forcerange="-5 5" kv="25" ctrlrange="-30 30" ctrllimited="true"/>
     <position name="steering_hinge" joint="left_steering_hinge_joint" forcerange="-1 1" ctrlrange="-0.785 0.785" ctrllimited="true"/>
   </actuator>
     <sensor>
-        <!-- Used for observation -->
         <rangefinder name="rf_left"  site="sensor_left" />
         <rangefinder name="rf_front" site="sensor_front" />
         <rangefinder name="rf_right" site="sensor_right" />
         <velocimeter site="agent" name="velocimeter"/>
 
-        <!-- Used for intrinsic constraints -->
         <subtreecom body="agent" name="subtreecom"/>
         <subtreelinvel body="agent" name="subtreelinvel"/>
         <subtreeangmom body="agent" name="subtreeangmom"/>

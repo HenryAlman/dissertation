@@ -202,13 +202,21 @@ class BOEmitter(EmitterBase):
             best_f=self._best_standardised_fitness
         )
 
+        # note, do NOT treat raw_samples the same way as BOP-ELITES sobol samples then calcs EJIE for the points. 
+        # This does a much more complex and intensive process over all the points. Setting it to 10000 or something
+        # will explode memory consumption etc. and lead to the process getting killed. Learned the hard way.
         candidates, acq_value = optimize_acqf(
             acq_function=acq_func,
             # we normalised the X and Y data going into the GP, so we search from 0 to 1
             bounds=torch.stack([torch.zeros(self._solution_dim), torch.ones(self._solution_dim)]).to(device="cpu", dtype=torch.float64),
             q=self._batch_size,
             num_restarts=self._search_nrestarts,
-            raw_samples=self.num_sobol_samples
+            raw_samples=256, #TODO: make arg
+            return_best_only=True, # only return best batch, not results from all batches!
+            sequential=True # default=False, which is around 2-6x times faster due to joint optim., but much more memory-hungry and kept crashing. see https://botorch.org/docs/optimization
+                            # I've set to True both to stop memory crashes and because it provides a "fairer" comparison to the BOP-Elites version.
+                            # Our interest is in testing the algorithms, not whether BOTORCH joint optim is fast, and BOP-Elites could probably 
+                            # also do this joint optimisation in some way if coded differently.
         )
 
         unnormalised_candidates = []

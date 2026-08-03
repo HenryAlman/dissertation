@@ -213,12 +213,13 @@ def simulate(
 
         # get sensor data
         rangefinders_data = mujoco_data.sensordata[:3].copy()
-        # save measure
-        if (rangefinders_data[1] < min_front_rangefinder):
-            min_front_rangefinder = rangefinders_data[1]
+        
         # rangefinders return -1 return if hit nothing; we want this to engender behaviour like a far away wall, not a close wall,
         # so for any -1 returns we instead set to the maze_max_dist
         rangefinders_data[rangefinders_data == -1.0] = maze_max_dist
+        # save measure after doing that flip, otherwise min_rangefinder will be -1 for those who didn't hit anything
+        if (rangefinders_data[1] < min_front_rangefinder):
+            min_front_rangefinder = rangefinders_data[1]
         # we then shift so close walls send strong signal (1) while far walls send a weak signal (0)
         rangefinders = 1.0 - np.clip(rangefinders_data / maze_max_dist, 0.0, 1.0)
 
@@ -226,9 +227,9 @@ def simulate(
         if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
             velocimeter_x = mujoco_data.sensordata[3].copy()
             velocimeter_y = mujoco_data.sensordata[4].copy()
-            xy_speed = math.sqrt(velocimeter_x**2 + velocimeter_y**2)
+            xy_speed_ratio = np.clip((math.sqrt(velocimeter_x**2 + velocimeter_y**2) / 1.5), 0.0, 1.0) # top speed is ~1.5
             # direct policy between obs and actions based on pure model weights (range -1 to 1)
-            pruned_obs = [rangefinders[0], rangefinders[1], rangefinders[2], xy_speed]
+            pruned_obs = [rangefinders[0], rangefinders[1], rangefinders[2], xy_speed_ratio]
             unique_actions = np.dot(pruned_obs, weights) + biases
             unique_actions = np.tanh(unique_actions)
             # multiply output by car XML control range to get actual actions
@@ -422,6 +423,10 @@ def run_search(
             "x": [],
             "y": [],
         },
+        "Mean Score": {
+            "x": [],
+            "y": [],
+        },
         "Archive Size": {
             "x": [0],
             "y": [len(scheduler.archive)],
@@ -430,12 +435,24 @@ def run_search(
             "x": [0],
             "y": [scheduler.archive.stats.qd_score],
         },
+        "Coverage": {
+            "x": [0],
+            "y": [scheduler.archive.stats.coverage]
+        },
+        "Sim Time": {
+            "x": [],
+            "y": []
+        }
     }
 
     # if BOP-Elites (or otherwise there is a passive/result_archive, log metrics for this as well)
     if (scheduler.result_archive != scheduler.archive):
         passive_metrics = {
                 "Max Score": {
+                    "x": [],
+                    "y": [],
+                },
+                "Mean Score": {
                     "x": [],
                     "y": [],
                 },
@@ -446,6 +463,10 @@ def run_search(
                 "QD Score": {
                     "x": [0],
                     "y": [scheduler.result_archive.stats.qd_score],
+                },
+                "Coverage": {
+                    "x": [0],
+                    "y": [scheduler.result_archive.stats.coverage]
                 },
             }
     else: passive_metrics = None
@@ -490,18 +511,29 @@ def run_search(
         # Metrics.
         total_elapsed_time = time.time() - start_time
         metrics["Max Score"]["x"].append(total_elapsed_time)
-        metrics["Max Score"]["y"].append(scheduler.archive.stats.obj_max)
+        metrics["Max Score"]["y"].append(scheduler.archive.stats.obj_mean)
+        metrics["Mean Score"]["x"].append(total_elapsed_time)
+        metrics["Mean Score"]["y"].append(scheduler.archive.stats.obj_mean)
         metrics["Archive Size"]["x"].append(total_elapsed_time)
         metrics["Archive Size"]["y"].append(len(scheduler.archive))
+        metrics["Coverage"]["x"].append(total_elapsed_time)
+        metrics["Coverage"]["y"].append(scheduler.archive.stats.coverage)
         metrics["QD Score"]["x"].append(total_elapsed_time)
         metrics["QD Score"]["y"].append(scheduler.archive.stats.qd_score)
+        metrics["Sim Time"]["x"].append(total_elapsed_time)
+        metrics["Sim Time"]["y"].append(sim_time)
         if (passive_metrics is not None):
             passive_metrics["Max Score"]["x"].append(total_elapsed_time)
             passive_metrics["Max Score"]["y"].append(scheduler.result_archive.stats.obj_max)
+            passive_metrics["Mean Score"]["x"].append(total_elapsed_time)
+            passive_metrics["Mean Score"]["y"].append(scheduler.result_archive.stats.obj_mean)
             passive_metrics["Archive Size"]["x"].append(total_elapsed_time)
             passive_metrics["Archive Size"]["y"].append(len(scheduler.result_archive))
             passive_metrics["QD Score"]["x"].append(total_elapsed_time)
             passive_metrics["QD Score"]["y"].append(scheduler.result_archive.stats.qd_score)
+            metrics["Coverage"]["x"].append(total_elapsed_time)
+            metrics["Coverage"]["y"].append(scheduler.result_archive.stats.coverage)
+
 
         # Logging.
         if (passive_metrics is not None): metrics_to_use = passive_metrics # for BOP-Elites, log the progress of the result_archive as that's our final result
@@ -755,7 +787,7 @@ def run_evaluation(
         model = elite["solution"]
         archive_idx = df_top.index[idx]
 
-        reward, final_lin_vel, final_ang_vel, _ = simulate(model, maze_params, xml_file, env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
+        reward, final_lin_vel, final_ang_vel, _, _, _ = simulate(model, maze_params, xml_file, env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
         log.info(
             "=== Index {} ===\n"
             "Model:\n"
@@ -794,15 +826,17 @@ def create_predicted_archive(
     
     objs = []
     meas = []
+    pos = []
     predicted_goal_reached_counter = 0
 
-    for obj, linear_vel, min_rangefinder, reached_goal in results:
+    for obj, linear_vel, min_rangefinder, final_x_pos, final_y_pos, reached_goal in results:
         objs.append(obj)
         meas.append([linear_vel, min_rangefinder])
+        pos.append([final_x_pos, final_y_pos])
         if (reached_goal == True):
             predicted_goal_reached_counter += 1
 
-    scheduler.result_archive.add(sols, objs, meas)
+    scheduler.result_archive.add(sols, objs, meas, pos=pos)
 
     # save, graphs, etc.
     scheduler.result_archive.data(return_type="pandas").to_csv(outdir / "obs_and_predicted_archive.csv")
