@@ -433,3 +433,51 @@
   - Alg Time: 0.74 s
   - Sim Time: 3182.44 s
   - RAM Usage: 0.7672157287597656 GB
+2026-08-06 01:19:24.186 | INFO     | __main__:run_search:432 - > 270 itrs completed after 3243.94 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 108
+  - QD Score: 36.89679357453795
+  - Archive Dims: [28 28]
+  - Alg Time: 0.75 s
+  - Sim Time: 3243.14 s
+  - RAM Usage: 0.7648735046386719 GB
+2026-08-06 01:20:25.082 | INFO     | __main__:run_search:432 - > 275 itrs completed after 3304.83 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 108
+  - QD Score: 37.154186626270594
+  - Archive Dims: [28 28]
+  - Alg Time: 0.75 s
+  - Sim Time: 3304.03 s
+  - RAM Usage: 0.7644729614257812 GB
+2026-08-06 01:21:25.711 | INFO     | __main__:run_search:432 - > 280 itrs completed after 3365.46 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 108
+  - QD Score: 37.99042734079392
+  - Archive Dims: [28 28]
+  - Alg Time: 0.75 s
+  - Sim Time: 3364.65 s
+  - RAM Usage: 0.76629638671875 GB
+2026-08-06 01:22:27.040 | INFO     | __main__:run_search:432 - > 285 itrs completed after 3426.79 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 110
+  - QD Score: 39.33287746229226
+  - Archive Dims: [28 28]
+  - Alg Time: 0.75 s
+  - Sim Time: 3425.98 s
+  - RAM Usage: 0.7672538757324219 GB
+2026-08-06 01:23:26.365 | INFO     | __main__:run_search:432 - > 290 itrs completed after 3486.12 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 111
+  - QD Score: 40.76209781105164
+  - Archive Dims: [28 28]
+  - Alg Time: 0.76 s
+  - Sim Time: 3485.30 s
+  - RAM Usage: 0.7674064636230469 GB
+2026-08-06 01:24:29.007 | INFO     | __main__:run_search:432 - > 295 itrs completed after 3548.76 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 111
+  - QD Score: 40.76209781105164
+  - Archive Dims: [28 28]
+  - Alg Time: 0.76 s
+  - Sim Time: 3547.94 s
+  - RAM Usage: 0.7674217224121094 GB
