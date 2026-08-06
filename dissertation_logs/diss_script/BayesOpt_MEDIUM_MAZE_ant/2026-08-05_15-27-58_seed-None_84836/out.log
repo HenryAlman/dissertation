@@ -1,0 +1,43 @@
+2026-08-05 15:27:58.752 | INFO     | __main__:mujoco_main:718 - Saving outputs to: dissertation_logs/diss_script/BayesOpt_MEDIUM_MAZE_ant/2026-08-05_15-27-58_seed-None_84836
+2026-08-05 15:27:58.767 | INFO     | __main__:run_search:426 - > Starting search.
+
+2026-08-05 15:32:46.377 | INFO     | __main__:run_search:553 - > 1 itrs completed after 287.61 s
+  - Max Score: -10.32776999903503
+  - Archive Size: 69
+  - QD Score: 1219.3838700665829
+  - Goal Reached Count: 0
+  - Archive Dims: [28 28]
+  - Alg Time: 4.77 s
+  - Sim Time: 282.84 s
+2026-08-05 15:34:23.258 | INFO     | __main__:run_search:553 - > 5 itrs completed after 384.49 s
+  - Max Score: -10.351322828060168
+  - Archive Size: 70
+  - QD Score: 1235.4074020357882
+  - Goal Reached Count: 0
+  - Archive Dims: [28 28]
+  - Alg Time: 67.64 s
+  - Sim Time: 316.85 s
+2026-08-05 15:36:25.150 | INFO     | __main__:run_search:553 - > 10 itrs completed after 506.38 s
+  - Max Score: -10.379009769978566
+  - Archive Size: 75
+  - QD Score: 1321.5742672516076
+  - Goal Reached Count: 0
+  - Archive Dims: [28 28]
+  - Alg Time: 145.46 s
+  - Sim Time: 360.92 s
+2026-08-05 15:37:58.353 | INFO     | __main__:run_search:553 - > 15 itrs completed after 599.59 s
+  - Max Score: -10.34057031936443
+  - Archive Size: 78
+  - QD Score: 1377.4355150895744
+  - Goal Reached Count: 0
+  - Archive Dims: [28 28]
+  - Alg Time: 203.99 s
+  - Sim Time: 395.60 s
+2026-08-05 15:38:17.930 | INFO     | __main__:run_search:553 - > 16 itrs completed after 619.16 s
+  - Max Score: -10.298373411548297
+  - Archive Size: 79
+  - QD Score: 1398.4285004876845
+  - Goal Reached Count: 0
+  - Archive Dims: [28 28]
+  - Alg Time: 215.45 s
+  - Sim Time: 403.71 s
