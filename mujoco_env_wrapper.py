@@ -27,8 +27,6 @@ class MujocoEnvWrapper(gym.Wrapper):
     def reset(self, seed, options):
         self.prior_x = 0
         self.prior_y = 0
-        self.start_x = 0
-        self.start_y = 0
         self.current_step = 0
         self.standing_still_counter = 0
         return self.env.reset(seed=seed, options=options)
@@ -49,30 +47,40 @@ class MujocoEnvWrapper(gym.Wrapper):
         y_pos = mujoco_data.qpos[1]
 
         if (self.current_step == 0):
-            self.start_x = x_pos
-            self.start_y = y_pos
+            self.prior_x = x_pos
+            self.prior_y = y_pos
 
-        # fitness factors - note, we calculate final reward in a customised way in main loop!
-        distance_from_start = math.sqrt( (x_pos - self.start_x)**2 + (y_pos - self.start_y)**2 )
+        dist_since_last_checkpoint = math.sqrt((x_pos - self.prior_x)**2 + (y_pos - self.prior_y)**2)
+
+        # only count path distance after a metre of travel, otherwise "bobbing" of the ant in gait counts
+        if (dist_since_last_checkpoint > 1):
+            # update checkpoint
+            self.prior_x = x_pos
+            self.prior_y = y_pos
+            # return the distance to add to path distance
+            info["path_dist"] = dist_since_last_checkpoint
+        else:
+            info["path_dist"] = 0
+
         # control cost from original Gymnasium Ant
         # their default cost is 0.5, but this produced consistently "slothlike" Ants. 
         # We want to value distance a bit more, so we halve the control cost estimation.
         # (we equally could double the distance score in terms of value)
-        control_cost = 0.25 * np.sum(np.square(action))
+        control_cost = 0.5 * np.sum(np.square(action))
 
         # also return info for characteristics
         linear_x_velocity = mujoco_data.qvel[0]
         linear_y_velocity = mujoco_data.qvel[1]
         torso_height = mujoco_data.qpos[2]
 
+        # we need to let ineffective controllers burn energy going nowhere without ending early.
+        # hit on sim time due to no truncation, sadly
+        """
         # terminate if the torso just falls over
         upright_alignment = mujoco_data.xmat[self.torso_id][8]
         if upright_alignment < 0.2:
             terminated = True
-
-
-        # we need to let ineffective controllers burn energy going nowhere without ending early.
-        """
+        
         # track movement; terminate if completely stalled
         if (self.current_step == 0):
             self.prior_x = x_pos
@@ -100,6 +108,5 @@ class MujocoEnvWrapper(gym.Wrapper):
         info["x_pos"] = x_pos
         info["y_pos"] = y_pos
         info["control_cost"] = control_cost
-        info["distance_from_start"] = distance_from_start
         
         return obs, reward, terminated, truncated, info

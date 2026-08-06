@@ -84,16 +84,15 @@ def simulate(
 
     # fitness
     total_reward = 0.0
-    distance_achieved = 0.0
-    control_costs = []
+    path_distances = []
     #measures:
-    final_x_pos = 0
-    final_y_pos = 0
+    control_costs = []
+    torso_heights = []
+
     #characteristics we track for interest:
     linear_x_velocities = []
     linear_y_velocities = []
     min_front_rangefinder = maze_max_dist
-    torso_heights = []
 
     obs, _ = env.reset(seed=seed, options=maze_options) # reset has to be called first per Gym/Mujoco Documentation!
     done = False # track whether session was terminated or truncated
@@ -163,28 +162,29 @@ def simulate(
         torso_heights.append(info["torso_height"])
         control_costs.append(info["control_cost"])
 
-        # measures/fitness extracted at final step
+        # characteristics extracted at final step
         if done:
-            distance_achieved = info["distance_from_start"]
             final_x_pos = info["x_pos"]
             final_y_pos = info["y_pos"]
 
     env.close() # must close env after every sim!
 
-    # fitness
+    # fitness: distance travelled
+    total_reward = np.sum(path_distances)
+
+    # measures
+    avg_torso_height = np.mean(torso_heights)
     total_control_cost = np.sum(control_costs)
-    total_reward = distance_achieved / total_control_cost
 
     # characteristic: average of the xy-plane velocities
     avg_forward_vel = np.mean(np.sqrt(np.array(linear_x_velocities)**2 + np.array(linear_y_velocities)**2))
-    # characteristic: average torso height
-    avg_torso_height = np.mean(torso_heights)
-
+    # other characteristic, min_rangefinder, is ready to go from loop
+    
     if (record_video):
         path = str(record_outdir / f'videos/{record_video_idx}.mp4')
         imageio.mimsave(path, frames, fps=30)
 
-    return total_reward, final_x_pos, final_y_pos, avg_forward_vel, min_front_rangefinder, avg_torso_height, distance_achieved, total_control_cost
+    return total_reward, avg_torso_height, total_control_cost, final_x_pos, final_y_pos, avg_forward_vel, min_front_rangefinder
 
 
 def create_scheduler(
@@ -209,7 +209,7 @@ def create_scheduler(
             ranges=ranges,
             seed=seed,
             qd_score_offset=qd_score_offset,
-            extra_fields={"chars": ((5,), np.float64)} # store other characteristics as well
+            extra_fields={"chars": ((4,), np.float64)} # store other characteristics as well
         )
 
     # for MAP/Bayes, this is only archive. For BOP, it's the "result archive" at the intended final dimensionality
@@ -219,7 +219,7 @@ def create_scheduler(
         ranges=ranges,
         seed=seed,
         qd_score_offset=qd_score_offset,
-        extra_fields={"chars": ((5,), np.float64)} # store other characteristics as well
+        extra_fields={"chars": ((4,), np.float64)} # store other characteristics as well
     )
 
     # Seeds for emitters - note None means a random one is generated.
@@ -379,10 +379,10 @@ def run_search(
         sim_time += time.time() - loop_time
 
         # Process the results.
-        for obj, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, avg_torso_height, distance_achieved, total_control_cost in results:
+        for obj, avg_torso_height, total_control_cost, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder in results:
             objs.append(obj)
-            meas.append([final_x_pos, final_y_pos])
-            chars.append([avg_lin_vel, min_rangefinder, avg_torso_height, distance_achieved, total_control_cost])
+            meas.append([avg_torso_height, total_control_cost])
+            chars.append([final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder])
 
         loop_time = time.time()
         # Send the results back to the scheduler. It will pass them onto each emitter.
@@ -464,7 +464,7 @@ def mujoco_main(
     #TODO: consider change default here and in legged_controller to a value based on the General Neural Locomotion Framework paper; here, it's 75% of dist between each RBF
     rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.75), # rbf_sigma, see LeggedController for explanation.
     env_seed: int = 52, # seed for creating the simulation environment
-    time_to_run: int = 3600, # seconds to run for, default 60 to avoid costly mistakes!
+    time_to_run: int = 36000, # seconds to run for, default 60 to avoid costly mistakes!
     log_freq: int = 5, # log metrics every X iterations
     n_emitters: int = 1, # number of emitters to use
     batch_size: int = 5, # number of samples to take for simulation at each iteration (per emitter!)
@@ -492,8 +492,8 @@ def mujoco_main(
                         }
         maze_max_dist = 23.0 # approx max rangefinder dist possible
         min_obj = 0.0 #if switching to goal again, -17.0 # approx max distance from goal
-        archive_dims = [20, 12]
-        archive_ranges = [(-10.0, 10.0), (-6.0, 6.0)]
+        archive_dims = [12, 25] #TODO: tune
+        archive_ranges = [(0.2, 0.8), (0, 500)] # TODO: tune
     elif (maze_str == "U_MAZE"):
         maze = U_MAZE
         max_episode_steps = 1800
@@ -502,8 +502,8 @@ def mujoco_main(
                         }
         maze_max_dist = 12.0
         min_obj = 0.0 #if switching to goal again, -14.0
-        archive_dims = [15, int(maze_max_dist)]
-        archive_ranges = [(-6, 6), (-6, 6)]
+        archive_dims = [12, 25] #TODO: tune
+        archive_ranges = [(0.2, 0.8), (0, 500)] # TODO: tune
     elif (maze_str == "MEDIUM_MAZE"):
         maze = MEDIUM_MAZE
         max_episode_steps = 3000
@@ -512,8 +512,8 @@ def mujoco_main(
                         }
         maze_max_dist = 28.0
         min_obj = 0.0 #if switching to goal again, -28.0
-        archive_dims = [28, 28]
-        archive_ranges = [(-14, 14), (-14, 14)]
+        archive_dims = [12, 25] #TODO: tune
+        archive_ranges = [(0.2, 0.8), (0, 500)] # TODO: tune
     elif (maze_str == "LARGE_MAZE"):
         maze = LARGE_MAZE
         max_episode_steps = 4000
@@ -522,8 +522,8 @@ def mujoco_main(
                         }
         maze_max_dist = 40.0
         min_obj = 0.0 #if switching to goal again, -35.0
-        archive_dims = [44, 28]
-        archive_ranges = [(-22, 22), (-14, 14)]
+        archive_dims = [12, 25] #TODO: tune
+        archive_ranges = [(0.2, 0.8), (0, 500)] # TODO: tune
     else:
         raise ValueError("Unknown map!")
 
@@ -736,20 +736,20 @@ def run_evaluation(
         model = elite["solution"]
         archive_idx = df_top.index[idx]
 
-        reward, final_x_pos, final_y_pos, _, _, _, _, _ = simulate(model, maze_params, xml_file, controller_params=controller_params, seed=env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
+        reward, avg_torso_height, total_control_cost, _, _, _, _ = simulate(model, maze_params, xml_file, controller_params=controller_params, seed=env_seed, record_video=True, record_video_idx=idx, record_outdir=outdir)
         log.info(
             "=== Index {} ===\n"
             "Model:\n"
             "{}\n"
             "Reward: {}\n"
             "Original Reward: {}\n"
-            "Final x/y pos: {} / {} \n"
-            "Original Final pos: {}\n",
+            "Final meas: {} / {} \n"
+            "Original meas: {}\n",
             archive_idx,
             model,
             reward,
             elite["objective"],
-            final_x_pos, final_y_pos,
+            avg_torso_height, total_control_cost,
             elite["measures"]
         )
 
@@ -777,10 +777,10 @@ def create_predicted_archive(
     meas = []
     chars = []
 
-    for obj, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, avg_torso_height, distance_achieved, total_control_cost in results:
+    for obj, avg_torso_height, total_control_cost, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder in results:
         objs.append(obj)
-        meas.append([final_x_pos, final_y_pos])
-        chars.append([avg_lin_vel, min_rangefinder, avg_torso_height, distance_achieved, total_control_cost])
+        meas.append([avg_torso_height, total_control_cost])
+        chars.append([final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder])
 
     scheduler.result_archive.add(sols, objs, meas, chars=chars)
 

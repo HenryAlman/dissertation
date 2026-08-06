@@ -1,0 +1,19 @@
+2026-08-06 02:03:41.271 | INFO     | __main__:mujoco_main:669 - Saving outputs to: dissertation_logs/map_ant/MAPElites_MEDIUM_MAZE_ant/2026-08-06_02-03-41_seed-None_42640
+2026-08-06 02:03:41.271 | INFO     | __main__:run_search:298 - > Starting search.
+
+2026-08-06 02:03:53.853 | INFO     | __main__:run_search:432 - > 1 itrs completed after 12.58 s
+  - Max Score: 0.0
+  - Archive Size: 3
+  - QD Score: 0.0
+  - Archive Dims: [12 25]
+  - Alg Time: 0.62 s
+  - Sim Time: 11.96 s
+  - RAM Usage: 0.7635154724121094 GB
+2026-08-06 02:04:42.317 | INFO     | __main__:run_search:432 - > 5 itrs completed after 61.05 s
+  - Max Score: 0.0
+  - Archive Size: 12
+  - QD Score: 0.0
+  - Archive Dims: [12 25]
+  - Alg Time: 0.63 s
+  - Sim Time: 60.42 s
+  - RAM Usage: 0.7656517028808594 GB

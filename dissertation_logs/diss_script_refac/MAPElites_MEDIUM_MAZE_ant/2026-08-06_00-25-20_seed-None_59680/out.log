@@ -481,3 +481,11 @@
   - Alg Time: 0.76 s
   - Sim Time: 3547.94 s
   - RAM Usage: 0.7674217224121094 GB
+2026-08-06 01:25:32.796 | INFO     | __main__:run_search:432 - > 300 itrs completed after 3612.55 s
+  - Max Score: 1.3772642915602826
+  - Archive Size: 113
+  - QD Score: 41.34302731272558
+  - Archive Dims: [28 28]
+  - Alg Time: 0.76 s
+  - Sim Time: 3611.72 s
+  - RAM Usage: 0.7674369812011719 GB
