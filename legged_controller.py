@@ -36,8 +36,8 @@ class LeggedController():
             sign_mask: np.ndarray = np.array([
                                             1.0, # frontright hip, +ve torque is forward
                                             1.0, # frontright ankle, +ve torque is down
-                                            -1.0, # leftright hip, -ve torque is forward
-                                            1.0, # leftright ankle, +ve torque is down
+                                            -1.0, # frontleft hip, -ve torque is forward
+                                            1.0, # frontleft ankle, +ve torque is down
                                             1.0, # backright hip, +ve torque is forward
                                             -1.0, # backright ankle, -ve torque is down
                                             -1.0, # backleft hip, -ve torque is forward
@@ -46,12 +46,23 @@ class LeggedController():
             num_rbfs: int = 10,
             rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.75),
             sensor_mode: str = "unilateral",
+            leg_geom_names: list = [  
+                                        "frontright_leg_geom", # frontright hip
+                                        "frontright_ankle_geom",  # frontright ankle
+                                        "frontleft_leg_geom", #frontleft hip
+                                        "frontleft_ankle_geom", # frontleft ankle
+                                        "backright_leg_geom", #backright hip
+                                        "backright_ankle_geom", # backright ankle
+                                        "backleft_leg_geom", # backleft hip
+                                        "backleft_ankle_geom", # backleft ankle,
+                                    ]
         ) -> None:
         self.num_legs = num_legs
         self.gait_phases = gait_phases
         self.sign_mask = sign_mask
         self.num_rbfs = num_rbfs
         self.rbf_sigma = rbf_sigma
+        self.leg_geom_names = leg_geom_names
 
         if(sensor_mode not in ["unilateral", "per_joint"]):
                 raise ValueError("Unrecognised sensor_mode. Only unilateral or per_joint supported.")
@@ -74,13 +85,15 @@ class LeggedController():
                 for phi in self.gait_phases
         ])
 
+        self.broken_sign_mask = np.full(int(self.num_legs*2), 1)
+
         self.unpack_model(model)
 
 
     def unpack_model(self, model: np.ndarray):
         # unpack weights and set up sensor reflex map
         self.w_cpg = model[0]
-        locomotion_end_idx = int(1 + (self.num_rbfs*2)) # w_cpg, w_locomotion
+        locomotion_end_idx = int(1 + (self.num_rbfs*2)) # w_cpg=1, then 2*rbfs for w_locomotion
         w_locomotion = model[1:locomotion_end_idx]
         w_locomotion = w_locomotion.reshape(self.num_rbfs, 2)
         self.w_locomotion_hip = w_locomotion[:,0]
@@ -91,7 +104,7 @@ class LeggedController():
             # note: assumes sensordiff is LEFT - RIGHT differential
             self.w_hip_centresensor, self.w_ankle_centresensor, self.w_hip_sensordiff, self.w_ankle_sensordiff = model[-4:]
             self.sensor_reflex_map = np.empty((0,2))
-            for i in range(int(self.num_legs/2)):
+            for i in range(int(self.num_legs/2)): # will produce below right/left combo for each pair of legs
                     self.sensor_reflex_map = np.append(self.sensor_reflex_map, [
                             [self.w_hip_centresensor, -self.w_hip_sensordiff], # right hip
                             [self.w_ankle_centresensor, -self.w_ankle_sensordiff], # right ankle
@@ -103,7 +116,8 @@ class LeggedController():
             # and we want to turn right, i.e. dampen right motion and exaggerate left motion).
             # same logic for the others.
         elif(self.sensor_mode == "per_joint"):
-              print("TODO!") #TODO
+            # 2 per joint, one for frontsensor and one for left/right diff
+            self.sensor_reflex_map = model[locomotion_end_idx:].reshape(int(self.num_legs*2), 2) 
 
 
 
@@ -142,26 +156,32 @@ class LeggedController():
 
         virtual_gait_torques = np.array(leg_gait_torques)
 
-        if(self.sensor_mode == "unilateral"):
-            # steering signal swings positive/negative, and size of signal changes, depending on whether 
-            # left or right is closer (and by how much)
-            left_right_differential = rangefinders[0] - rangefinders[2]
-            # combine with front sensor, and map to reflex
-            sensors = np.array([rangefinders[1], left_right_differential])
-            sensor_reflex = np.dot(self.sensor_reflex_map, sensors)
-            # shift upwards so ranges around 1.0 (i.e. don't change anything from normal cpg) 
-            # rather than 0.0 (don't *do* anything b/c 0 * cpg = 0)
-            # clip to 0.2 to 1.8 so we amplify/dampen by 80% max
-            sensor_multipliers = np.clip(1.0 + sensor_reflex, 0.2, 1.8)
+        # steering signal swings positive/negative, and size of signal changes, depending on whether 
+        # left or right is closer (and by how much)
+        left_right_differential = rangefinders[0] - rangefinders[2]
+        # combine with front sensor, and map to reflex
+        sensors = np.array([rangefinders[1], left_right_differential])
+        sensor_reflex = np.dot(self.sensor_reflex_map, sensors)
+        # shift upwards so ranges around 1.0 (i.e. don't change anything from normal cpg) 
+        # rather than 0.0 (don't *do* anything b/c 0 * cpg = 0)
+        # clip to 0.2 to 1.8 so we amplify/dampen by 80% max
+        sensor_multipliers = np.clip(1.0 + sensor_reflex, 0.2, 1.8)
 
-            virtual_torques = virtual_gait_torques * sensor_multipliers
-            xml_torques = virtual_torques * self.sign_mask
+        virtual_torques = virtual_gait_torques * sensor_multipliers
+        xml_torques = virtual_torques * self.sign_mask
 
-            # pass through tanh activation function
-            # note: ant/hex control ranges in XML are already -1 to 1 so can use these as is
-            unique_actions = np.tanh(xml_torques)
+        # pass through tanh activation function
+        # note: ant/hex control ranges in XML are already -1 to 1 so can use these as is
+        unique_actions = np.tanh(xml_torques) * self.broken_sign_mask
 
-            return unique_actions
-        
-        elif(self.sensor_mode == "per_joint"):
-            print("TODO!") #TODO
+        return unique_actions
+
+
+    def inform_broken(self, broken_geoms: list):
+        for idx, name in enumerate(self.leg_geom_names):
+             if (name in broken_geoms):
+                self.broken_sign_mask[idx] = 0 # no longer registers actions
+                if (idx % 2 == 0): # hip
+                    self.broken_sign_mask[idx+1] = 0 # respective ankle
+                else: # ankle
+                     self.broken_sign_mask[idx-1] = 0 # respective hip
