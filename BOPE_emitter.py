@@ -757,7 +757,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         self._max_ram = check_ram_usage("tell postGP RAM:", self._max_ram)
          # optimise GP parameters and fit it
         mll = ExactMarginalLogLikelihood(self._gp.likelihood, self._gp)
-        fit_gpytorch_mll(mll, max_attempts=10) #TODO: make an arg
+        #default is 5 from documentation. However, it stops as soon as it works unless you set pick_best_of_all_attempts=True
+        #so we can have more restarts without additional cost. Given the lengthiness of these experiments, having it fail halfway through is not worth it.
+        fit_gpytorch_mll(mll, max_attempts=10)
         self._max_ram = check_ram_usage("tell postMLL RAM:", self._max_ram)
 
         
@@ -793,8 +795,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         return torch_lower + (torch_upper - torch_lower) * x_normalised
 
 
-    # WARNING: this is time consuming to run! It runs up to
-    # 3 * number of result_archive cells Pattern Searches
+    # WARNING: this is VERY time consuming to run! It runs up to
+    # 3 * number of result_archive cells Pattern Searches!
+    #TODO: this would certainly be faster with a better search method, perhaps we could use botorch qUCB with beta = 0 and some costraints or something
     def get_predicted_elites(
         self,
         archive_boundaries, # pass in the result_archive.boundaries here!
@@ -824,6 +827,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         def evaluate_gp(x):
             nonlocal _cached_x, _cached_prediction
             if _cached_x is not None and np.array_equal(x, _cached_x):
+                print("cache trigger!") # TODO: temp debug
                 return _cached_prediction
 
             x_norm = self._normalise(x)
@@ -862,7 +866,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                 )
 
                 # warm start from either existing elite or closest elite (as defined by measure space)
-                # print(f"Predicting for cell: {dim0_boundaries[i-1]} to {dim0_boundaries[i]}, {dim1_boundaries[j-1]} to {dim1_boundaries[j]}")
+                print(f"Predicting for cell: {dim0_boundaries[i-1]} to {dim0_boundaries[i]}, {dim1_boundaries[j-1]} to {dim1_boundaries[j]}")
                 cell_center = np.array([(dim0_boundaries[i-1] + dim0_boundaries[i])/2.0, (dim1_boundaries[j-1] + dim1_boundaries[j])/2.0])
                 occupied, elite_data = self.archive.retrieve_single(cell_center)
                 if (occupied):
@@ -872,17 +876,18 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                     distances = np.linalg.norm(all_measures - cell_center, axis=1)
                     closest_idx = np.argmin(distances)
                     if (distances[closest_idx] > max_allowable_distance):
-                        #print("No valid elite in range. Skipping.")
+                        print("No valid elite in range. Skipping.")
                         continue
                     x0 = all_solutions[closest_idx]
 
-                # TODO make args
+                # TODO make these args
                 restarts = 3
                 noise_scale = 0.02 # TODO: should really scale with number of cells in archive, so we don't perturb out of the cell boundaries too much
                 best_solution = None
                 best_result_F = None
 
                 for attempt in range(restarts+1):
+                    print(f"Attempt {attempt}...")
                     if (attempt == 0):
                         start_point = x0
                     else:
@@ -910,4 +915,3 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         save_loc = str(outdir / "predicted_elites.npy")
         np.save(save_loc, predicted_elites)
         return predicted_elites
-

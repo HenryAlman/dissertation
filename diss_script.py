@@ -55,7 +55,7 @@ from mujoco_env_wrapper import MujocoEnvWrapper
 
 from legged_controller import LeggedController
 
-from diss_utils import save_heatmap, save_ccdf, save_metrics, check_ram_usage #TODO: temp debugtool, assert_single_threaded
+from diss_utils import save_heatmap, save_ccdf, save_metrics, check_ram_usage
 
 
 def simulate(
@@ -179,7 +179,7 @@ def simulate(
 
     # measures
     avg_torso_height = np.mean(torso_heights)
-    total_control_cost = np.mean(control_costs)
+    avg_control_cost = np.mean(control_costs)
 
     # characteristic: average of the xy-plane velocities
     avg_forward_vel = np.mean(np.sqrt(np.array(linear_x_velocities)**2 + np.array(linear_y_velocities)**2))
@@ -190,10 +190,10 @@ def simulate(
     
     if (record_video):
         path = str(record_outdir / f'videos/{record_video_idx}.mp4')
-        imageio.mimsave(path, frames, fps=30)
+        imageio.mimsave(path, frames, fps=25) # timestep = 0.04, so 25frames=1second
 
 
-    return total_reward, avg_torso_height, total_control_cost, final_x_pos, final_y_pos, avg_forward_vel, min_front_rangefinder, broken_legs
+    return total_reward, avg_torso_height, avg_control_cost, final_x_pos, final_y_pos, avg_forward_vel, min_front_rangefinder, broken_legs
 
 
 def create_scheduler(
@@ -393,9 +393,9 @@ def run_search(
         sim_time += time.time() - loop_time
 
         # Process the results.
-        for obj, avg_torso_height, total_control_cost, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, broken_legs in results:
+        for obj, avg_torso_height, avg_control_cost, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, broken_legs in results:
             objs.append(obj)
-            meas.append([avg_torso_height, total_control_cost])
+            meas.append([avg_torso_height, avg_control_cost])
             chars.append([final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, broken_legs])
             total_broken_legs += broken_legs
 
@@ -404,7 +404,6 @@ def run_search(
         scheduler.tell(objs, meas, chars=chars)
         alg_time += time.time() - loop_time
 
-        #assert_single_threaded() #TODO: temp debug
         ram_usage = check_ram_usage(from_main=True)
 
         # Metrics.
@@ -470,13 +469,13 @@ def run_search(
 
 
 def mujoco_main(
-    algorithm: str = "MAPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
+    algorithm: str = "BayesOpt", # algorithm to use: MAPElites, BayesOpt, BOPElites
     #TODO: return this to empty dict string thing when uploading to cluster
-    algorithm_params = {"sigma0": 0.025}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
+    algorithm_params = {"search_nrestarts": 10}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
     xml_file: str = "/home/henry/dissertation_5thAug/rangefinder_ant.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
-    sensor_mode: str = "unilateral", # sensor mode to use
+    sensor_mode: str = "unilateral", # sensor mode to use, see legged controller
     num_rbfs: int = 10, # number of rbfs to use in legged controller
     #TODO: consider change default here and in legged_controller to a value based on the General Neural Locomotion Framework paper; here, it's 75% of dist between each RBF
     rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.75), # rbf_sigma, see LeggedController for explanation.
@@ -761,18 +760,6 @@ def run_evaluation(
     with open(outdir / "maze_params.sav", "rb") as f:
         maze_params = pickle.load(f)
 
-    #TODO TEMP DEBUG REMOVE
-    controller_params["leg_geom_names"] =  [ 
-                                    "frontright_leg_geom", # frontright hip
-                                    "frontright_ankle_geom",  # frontright ankle
-                                    "frontleft_leg_geom", #frontleft hip
-                                    "frontleft_ankle_geom", # frontleft ankle
-                                    "backright_leg_geom", #backright hip
-                                    "backright_ankle_geom", # backright ankle
-                                    "backleft_leg_geom", # backleft hip
-                                    "backleft_ankle_geom" # backleft ankle
-                                ]
-
     if (use_saved_emitter_0):
         with open(outdir / "emitter0.sav", "rb") as f:
             emitter = pickle.load(f)
@@ -790,7 +777,7 @@ def run_evaluation(
         model = elite["solution"]
         archive_idx = df_top.index[idx]
 
-        reward, avg_torso_height, total_control_cost, _, _, _, _, _ = simulate(model, maze_params, xml_file, controller_params=controller_params, seed=env_seed, record_video=True, record_video_idx=f"{idx}_{archive_idx}", record_outdir=outdir)
+        reward, avg_torso_height, avg_control_cost, _, _, _, _, _ = simulate(model, maze_params, xml_file, controller_params=controller_params, seed=env_seed, record_video=True, record_video_idx=f"{idx}_{archive_idx}", record_outdir=outdir)
         log.info(
             "=== Index {} ===\n"
             "Model:\n"
@@ -803,7 +790,7 @@ def run_evaluation(
             model,
             reward,
             elite["objective"],
-            avg_torso_height, total_control_cost,
+            avg_torso_height, avg_control_cost,
             elite["measures"]
         )
 
@@ -830,9 +817,9 @@ def create_predicted_archive(
 
     additional_broken_legs = 0
 
-    for obj, avg_torso_height, total_control_cost, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, broken_legs in results:
+    for obj, avg_torso_height, avg_control_cost, final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, broken_legs in results:
         objs.append(obj)
-        meas.append([avg_torso_height, total_control_cost])
+        meas.append([avg_torso_height, avg_control_cost])
         chars.append([final_x_pos, final_y_pos, avg_lin_vel, min_rangefinder, broken_legs])
         additional_broken_legs += broken_legs
 

@@ -1,4 +1,4 @@
-from bay_hex import simulate
+from diss_script import simulate
 import numpy as np
 from gymnasium_robotics.envs.maze.maps import OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
 import math
@@ -90,3 +90,7 @@ r1 = simulate(model, maze_params, xml_file, controller_params=controller_params,
 print(r1)
 
 
+"""
+predicted_elites = np.load("/home/henry/dissertation_logs_5thAug/bop_hex/BOPElites_MEDIUM_MAZE_hex/2026-08-06_02-16-32_seed-None_4656/predicted_elites.npy")
+print(predicted_elites)
+"""

@@ -72,6 +72,9 @@ class LeggedController():
         self.cpg_state = np.array([0.1, 0.0]) 
 
         # rbfs equally spaced around unit circle
+        # note, original paper had a more complex calculation for this. However, that's because
+        # they were allowing the shape/freq of the CPG output to be affected by a DIL module, which
+        # we aren't doing here. Ours oscillates at a constant rate depending on w_cpg.
         angles = np.linspace(0, 2 * np.pi, self.num_rbfs, endpoint=False)
         xs = np.cos(angles)
         ys = np.sin(angles)
@@ -123,7 +126,10 @@ class LeggedController():
 
     def get_action(self,  rangefinders):
         # SO(2) oscillator for discrete time steps, with weight w_cpg taking place
-        # of phi parameter. Original paper set it to exactly .01*pi, here we learn it.
+        # of phi parameter. Original paper set it to exactly .01*pi*(time), here we learn it as a parameter instead.
+        # See http://www.neurorobotik.de/downloads/publications/2003%20Pasemann%20-%20SO(2)-Networks%20as%20Neural%20Oscillators.pdf
+        # w_cpg = how many radians of rotation per timestep (0.04s). So at 0.05, freq is (2pi / 0.05)*0.04 = 5 secs per loop (0.2Hz). At 0.25, it's about once per second (1 Hz). 
+        # The original paper hardcoded ~0.3Hz, so we can vary a little bit down from there but a fair bit upwards, depending on what's optimal.
         x, y = self.cpg_state
         next_x = x * np.cos(self.w_cpg) - y * np.sin(self.w_cpg)
         next_y = x * np.sin(self.w_cpg) + y * np.cos(self.w_cpg)
@@ -147,6 +153,7 @@ class LeggedController():
 
             #force knee to lag 1/4 cycle
             #90 degree counterclockwise rotation is same as x = y, y = -x
+            # See A fast online frequency adaptation mechanism for CPG-based robot motion control
             rotated_cpg_knee = np.array([rotated_cpg_hip[1], -rotated_cpg_hip[0]])
             distances_knee = np.linalg.norm(self.rbf_centers - rotated_cpg_knee, axis=1)
             rbf_activations_knee = np.exp(- (distances_knee**2) / (2 * (self.rbf_sigma**2)))

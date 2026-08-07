@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from typing import Any
-import psutil # TODO: tracking single-threadedness, test only
+import psutil
 import os
 
 from loguru import logger as log
@@ -18,7 +18,7 @@ def save_heatmap(archive: GridArchive, filename: str | Path, min_obj: int | floa
         filename: Path to an image file.
     """
     fig, ax = plt.subplots(figsize=(8, 6))
-    grid_archive_heatmap(archive, vmin=min_obj, vmax=max_obj, ax=ax) #TODO, what's our new max fitness?
+    grid_archive_heatmap(archive, vmin=min_obj, vmax=max_obj, ax=ax)
     ax.set_ylabel("Final Y Position")
     ax.set_xlabel("Final X Position")
     fig.savefig(filename)
@@ -105,6 +105,8 @@ def assert_single_threaded():
         print(f"Single-threaded, active OS threads: {thread_count}")
 """
 
+
+#TODO if time make this a singleton class that stores the max ram, this is a cheap stopgap
 def check_ram_usage(msg="", cur_max_ram=0.0, from_main=False):
     process = psutil.Process(os.getpid())
     cur_ram = process.memory_info().rss / (1024 ** 3) # in GB
