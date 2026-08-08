@@ -469,18 +469,18 @@ def run_search(
 
 
 def mujoco_main(
-    algorithm: str = "BayesOpt", # algorithm to use: MAPElites, BayesOpt, BOPElites
+    algorithm: str = "BOPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
     #TODO: return this to empty dict string thing when uploading to cluster
-    algorithm_params = {"search_nrestarts": 10}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
+    algorithm_params = {"search_nrestarts": 10, "entropy_ejie": False, "make_prediction_archive": True, "upscale_schedule": ((5,5),(10,10))}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/home/henry/dissertation_5thAug/rangefinder_ant.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/home/henry/dissertation_5thAug/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     sensor_mode: str = "unilateral", # sensor mode to use, see legged controller
     num_rbfs: int = 10, # number of rbfs to use in legged controller
     #TODO: consider change default here and in legged_controller to a value based on the General Neural Locomotion Framework paper; here, it's 75% of dist between each RBF
-    rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.75), # rbf_sigma, see LeggedController for explanation.
+    rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.67), # rbf_sigma, see LeggedController for explanation.
     env_seed: int = 52, # seed for creating the simulation environment
-    time_to_run: int = 36000, # seconds to run for, default 60 to avoid costly mistakes!
+    time_to_run: int = 10, # seconds to run for, default to 60 to avoid costly mistakes!
     log_freq: int = 5, # log metrics every X iterations
     n_emitters: int = 1, # number of emitters to use
     batch_size: int = 5, # number of samples to take for simulation at each iteration (per emitter!)
@@ -506,7 +506,7 @@ def mujoco_main(
         maze_options = { "goal_cell": np.array([1, 4], dtype=int),
                         "reset_cell": np.array([3, 1], dtype=int)
                         }
-        maze_max_dist = 23.0 # approx max rangefinder dist possible
+        maze_max_dist = 10.0 # value that rangefinder readings are normalised/clipped against. Effectively, at what point do we start injecting sensor reflex values
         min_obj = 0.0 #if switching to goal again, -17.0 # approx max distance from goal
     elif (maze_str == "U_MAZE"):
         maze = U_MAZE
@@ -514,7 +514,7 @@ def mujoco_main(
         maze_options = { "goal_cell": np.array([1, 1], dtype=int),
                         "reset_cell": np.array([3, 1], dtype=int)
                         }
-        maze_max_dist = 12.0
+        maze_max_dist = 10.0
         min_obj = 0.0 #if switching to goal again, -14.0
     elif (maze_str == "MEDIUM_MAZE"):
         maze = MEDIUM_MAZE
@@ -522,7 +522,7 @@ def mujoco_main(
         maze_options = { "goal_cell": np.array([6, 5], dtype=int),
                         "reset_cell": np.array([6, 1], dtype=int)
                         }
-        maze_max_dist = 28.0
+        maze_max_dist = 10.0
         min_obj = 0.0 #if switching to goal again, -28.0
     elif (maze_str == "LARGE_MAZE"):
         maze = LARGE_MAZE
@@ -530,7 +530,7 @@ def mujoco_main(
         maze_options = { "goal_cell": np.array([3, 8], dtype=int),
                         "reset_cell": np.array([7, 1], dtype=int)
                         }
-        maze_max_dist = 40.0
+        maze_max_dist = 10.0
         min_obj = 0.0 #if switching to goal again, -35.0
     else:
         raise ValueError("Unknown map!")
@@ -580,18 +580,25 @@ def mujoco_main(
                             ]
         xml_str = "ant"
         archive_dims = [20, 20] #TODO: tune
-        archive_ranges = [(0.25, 0.65), (0, 1.5)] # TODO: tune
+        archive_ranges = [(0.25, 0.65), (0.0, 1.0)] # TODO: tune
         if (sensor_mode == "unilateral"):
             rbfs_num_weights = int(2 * num_rbfs)
             solution_dim = 5 + rbfs_num_weights # 1 x w_cpg, num_rbf*2 x for hip/ankle, 4x wfront/side sensors for hip/ankle
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
-            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(4, 1.5)])
+            # cpg freq, rbf-torque weights, sensor reflex weights
+            # w_cpg: 0.05-0.35 = 0.2Hz to 1.4Hz. 
+            # w_locomotion: -1 to 1. RBF activations ~1.6 at a time with 10 RBFs, so w/ maxed w_locomotion CPGRBF part can output up to tanh(1.6) = 0.92
+            # w_sensors: -1.2 to 1.2. 
+            # # # Front: if wall close, sensor reads 1.0. 1.0 * -1.2 = -1.2, shifted to -0.2 but clipped to 0.2. Output only 20% of cpgrbf power when wall ~2m away. With lower weight, say 1.0 * -0.6 + 1 = 0.4, so 40% of power when wall is immediately close. etc.
+            # # # Side: if left close right far, sensor reads 1.0. Same maths as above.
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(4, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
+            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 1.0), np.full(4, 1.2)])
         elif (sensor_mode == "per_joint"):
             rbfs_num_weights = int(2 * num_rbfs)
             sensors_num_weights = int(2 * num_legs * 2) # 2 per joint, one for front and one for side sensors
             solution_dim = 1 + rbfs_num_weights + sensors_num_weights
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(sensors_num_weights, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
-            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(sensors_num_weights, 1.5)])
+            # see under hex for logic for 
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(sensors_num_weights, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
+            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 1.0), np.full(sensors_num_weights, 1.2)])
         else: raise ValueError("Unknown sensor_mode!")
     elif(xml_file == "/home/henry/dissertation_5thAug/rangefinder_hex.xml"):
         num_legs = 6
@@ -633,18 +640,21 @@ def mujoco_main(
                         ]
         xml_str = "hex"
         archive_dims = [20, 20] #TODO: tune
-        archive_ranges = [(0.35, 0.65), (0, 2)] # TODO: tune
+        # higher range of control costs for hex because of extra legs!
+        # experimentally, it can't seem to achieve as low an average height as the Ant either
+        archive_ranges = [(0.35, 0.65), (0.0, 1.5)]  # TODO: tune
         if (sensor_mode == "unilateral"):
             rbfs_num_weights = int(2 * num_rbfs)
             solution_dim = 5 + rbfs_num_weights
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(4, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
-            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(4, 1.5)])
+            # cpg freq, rbf-torque weights, sensor reflex weights
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(4, -1.2)]) 
+            upper_bounds=np.hstack([0.35, np.full(rbfs_num_weights, 1.0), np.full(4, 1.2)])
         elif (sensor_mode == "per_joint"):
             rbfs_num_weights = int(2 * num_rbfs)
             sensors_num_weights = int(2 * num_legs * 2) # 2 per joint, one for front and one for side sensors
             solution_dim = 1 + rbfs_num_weights + sensors_num_weights
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(sensors_num_weights, -1.5)]) # cpg freq, rbf-torque weights, sensor reflex weights
-            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(sensors_num_weights, 1.5)])
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(sensors_num_weights, -1.2)]) 
+            upper_bounds=np.hstack([0.35, np.full(rbfs_num_weights, 1.0), np.full(sensors_num_weights, 1.2)])
         else: raise ValueError("Unknown sensor_mode!")
     else:
         raise ValueError("Unknown XML!")
@@ -804,9 +814,11 @@ def create_predicted_archive(
         env_seed: int,
         scheduler: Scheduler,
         outdir: Path,
+        num_prediction_iterations: int = 100
 ) -> None:
     log.info("Beginning Predictive Map")
-    sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive.boundaries, outdir)
+    # note uses batch size 50, so 50*num_iterations samples will be taken on GP
+    sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive, outdir, num_prediction_iterations)
     log.info("Finished Predictive Map. Simulating...")
 
     results = [simulate(model, maze_params, xml_file, controller_params=controller_params, seed=env_seed) for model in sols]

@@ -9,9 +9,10 @@ from scipy.stats import entropy, norm
 from scipy.stats.qmc import Sobol
 import torch
 from botorch.models import SingleTaskGP
-from gpytorch.kernels import MaternKernel, ScaleKernel
-from gpytorch.priors import GammaPrior
+from gpytorch.constraints import Interval
+from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.mlls import ExactMarginalLogLikelihood
+from botorch.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 from botorch.fit import fit_gpytorch_mll
 from botorch.acquisition import qLogExpectedImprovement
 from botorch.optim import optimize_acqf
@@ -268,11 +269,12 @@ class BOEmitter(EmitterBase):
                 self._max_ram = check_ram_usage("ask post-optimise_acqf RAM:", self._max_ram)
 
                 if (acq_value > best_acq):
-                    best_acq = acq_value
-                    best_candidate = candidate.squeeze(0).squeeze(0) # undo botorch dimensions
+                    best_acq = acq_value.detach().clone() # we detach and clone to stop this being tracked by autograd!
+                    best_candidate = candidate.squeeze(0).squeeze(0).detach().clone() # also undo botorch dimensions
 
             optimised_samples.append(best_candidate)
-            optimised_samples_acq_values.append(acq_value)
+            optimised_samples_acq_values.append(best_acq)
+            acq_func.set_X_pending(None) # clear the pending list, so we don't re-add same points over and over
 
 
         _, indices = torch.topk(torch.stack(optimised_samples_acq_values), k=self.batch_size)
@@ -285,6 +287,8 @@ class BOEmitter(EmitterBase):
             unnormalised_optimised_samples.append(self._unnormalise(normalised_sample).numpy())
 
         self._max_ram = check_ram_usage("ask return RAM:", self._max_ram)
+
+        del acq_func # manually clear for safety
 
         return np.array(unnormalised_optimised_samples)
 
@@ -335,12 +339,24 @@ class BOEmitter(EmitterBase):
 
         self._max_ram = check_ram_usage("tell preGP RAM:", self._max_ram)
 
-        # use BOTORCH default, no explicit kernel/lengthscale,
-        # as they implemented findings from Vanilla Bayesian Optimization Performs Great in High Dimensions
+        # use BOTORCH defaults, but with Matern 5/2 and a forcibly constrained low noise level to prevent covariance collapse in deterministic environment,
+        # We want to keep defaults as they implemented findings from Vanilla Bayesian Optimization Performs Great in High Dimensions
         # and they infer homoscedastic noise as a default as well
+
+        # this returns a Matern 5/2 with all of those default settings applied, rather than make one from scratch
+        matern = get_covar_module_with_dim_scaled_prior(
+            ard_num_dims=self.solution_dim,
+            use_rbf_kernel=False
+        )
+        # force a custom likelihood with a very small amount of noise constraint
+        # because sim is deterministic, it *could* reduce noise to 0 which can cause crashes
+        likelihood = GaussianLikelihood(noise_constraint=Interval(1e-8, 1e-6))
+
         self._gp = SingleTaskGP(
             train_X=X_train,
-            train_Y=standardised_Y
+            train_Y=standardised_Y,
+            likelihood=likelihood,
+            covar_module=matern
         )
         self._max_ram = check_ram_usage("tell preMLL RAM:", self._max_ram)
         # optimise GP parameters and fit it
@@ -349,6 +365,10 @@ class BOEmitter(EmitterBase):
         #so we can have more restarts without additional cost. Given the lengthiness of these experiments, having it fail halfway through is not worth it.
         fit_gpytorch_mll(mll, max_attempts=10)
         self._max_ram = check_ram_usage("tell postMLL return RAM:", self._max_ram)
+
+        # put GP into evaluation mode, not training mode
+        self._gp.eval()
+        self._gp.likelihood.eval()
 
         return None
 

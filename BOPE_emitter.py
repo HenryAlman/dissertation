@@ -2,28 +2,26 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Collection
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike
 import math
-import pandas as pd
 from scipy.stats import entropy, norm
 from scipy.stats.qmc import Sobol
 import torch
 from botorch.models import SingleTaskGP
-from gpytorch.kernels import MaternKernel, ScaleKernel
-from gpytorch.priors import GammaPrior
+from botorch.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
+from gpytorch.constraints import Interval
+from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from botorch.fit import fit_gpytorch_mll
-from botorch.acquisition import qLogExpectedImprovement
-from botorch.optim import optimize_acqf
 
 from ribs._utils import check_batch_shape, check_finite, validate_batch
 from ribs.archives import GridArchive, ArchiveDataFrame
-from ribs.emitters._emitter_base import EmitterBase
+from ribs.emitters import EmitterBase, GaussianEmitter
+from ribs.schedulers import Scheduler
 from ribs.typing import BatchData, Float, Int
 
 from diss_utils import check_ram_usage
@@ -38,7 +36,6 @@ from diss_utils import check_ram_usage
 # at cell boundaries (rather than a BOTORCH LBFGS gradient-based optimiser.)
 
 # Additionally added functionality to use the trained GP to make predictions over a higher-res archive cell, using existing elites in main archive as warm starts.
-# NOTE: this is *very very time consuming* as it requires many iterations of predicting from the GP. Consider pickling and saving the emitter and doing it later, see main script.
 
 # TODO: many values are hardcoded when they should be args; low priority for experiment but if returning to this, fix
 
@@ -489,7 +486,6 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         torch_samples = torch.tensor(samples_norm.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu")
         self._max_ram = check_ram_usage("_get_ejie_values torch_samples RAM:", self._max_ram)
         # grab means and stddevs from normalised torch GP
-        self._gp.eval()
         # we chunk the list, as BOTORCH loads them all into memory simultaneously otherwise!
         mus_torch_list = []
         stds_torch_list = []
@@ -500,8 +496,8 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                 self._max_ram = check_ram_usage(f"_get_ejie_values chunk {i} RAM:", self._max_ram)
                 chunk = torch_samples[i : i+chunk_size]
                 posterior = self._gp.posterior(chunk)
-                mus_torch_list.append(posterior.mean)
-                stds_torch_list.append(posterior.stddev)
+                mus_torch_list.append(posterior.mean.clone())
+                stds_torch_list.append(posterior.stddev.clone())
             mus_torch = torch.cat(mus_torch_list, dim=0)
             stds_torch = torch.cat(stds_torch_list, dim=0)
 
@@ -521,8 +517,10 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         
 
         # make numpy, then pass to identical logic to the prior original sklearn version
-        mus = mus_unnorm.numpy()
-        stds = stds_unnorm.numpy()
+        mus = mus_unnorm.numpy().copy()
+        stds = stds_unnorm.numpy().copy()
+
+        del mus_torch, stds_torch, mus_unnorm, stds_unnorm # del for safety
 
         expected_improvements = self._get_expected_improvements(mus[:, 0], stds[:, 0])
 
@@ -736,8 +734,6 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         # create list like: [obj_0, mea0_0, mea1_0], [obj1, mea0_1, mea1-1], ...
         standardised_Y = torch.stack([standardised_Y_train_obj.squeeze(-1), standardised_Y_train_mea_0, standardised_Y_train_mea_1], dim=-1)
         self._max_ram = check_ram_usage("tell ops4 RAM:", self._max_ram)
-        # use BOTORCH default, no explicit kernel/lengthscale,
-        # see notes at top of class.
 
         # note: we use SingleTaskGP with separate independent outputs rather than MultiTaskGP
         # (i.e. conditionally-dependent outputs). This is because:
@@ -750,9 +746,29 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
 
         # also note: we instantiate a new GP (rather than condition_on_observation to add data and get a "fantasy model")
         # see https://github.com/meta-pytorch/botorch/issues/533, https://github.com/meta-pytorch/botorch/discussions/2025 
+        
+        # use BOTORCH defaults, but with Matern 5/2 and a forcibly constrained low noise level to prevent covariance collapse in deterministic environment,
+        # We want to keep defaults as they implemented findings from Vanilla Bayesian Optimization Performs Great in High Dimensions
+        # and they infer homoscedastic noise as a default as well
+
+        # this returns a Matern 5/2 with all of those default settings applied, rather than make one from scratch
+        matern = get_covar_module_with_dim_scaled_prior(
+            ard_num_dims=self.solution_dim,
+            use_rbf_kernel=False,
+            batch_shape=torch.Size([standardised_Y.shape[-1]]) # use batch 3 here because fitting 3 GPs, over obj, mea0, mea1
+        )
+        # force a custom likelihood with a very small amount of noise constraint
+        # because sim is deterministic, it *could* reduce noise to 0 which can cause crashes
+        likelihood = GaussianLikelihood(
+            noise_constraint=Interval(1e-8, 1e-6),
+            batch_shape=torch.Size([standardised_Y.shape[-1]]) # use batch 3 here because fitting 3 GPs, over obj, mea0, mea1
+        )
+
         self._gp = SingleTaskGP(
             train_X=X_train,
-            train_Y=standardised_Y
+            train_Y=standardised_Y,
+            likelihood=likelihood,
+            covar_module=matern
         )
         self._max_ram = check_ram_usage("tell postGP RAM:", self._max_ram)
          # optimise GP parameters and fit it
@@ -761,6 +777,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         #so we can have more restarts without additional cost. Given the lengthiness of these experiments, having it fail halfway through is not worth it.
         fit_gpytorch_mll(mll, max_attempts=10)
         self._max_ram = check_ram_usage("tell postMLL RAM:", self._max_ram)
+        # put GP into evaluation mode, not training mode
+        self._gp.eval()
+        self._gp.likelihood.eval()
 
         
         # Checks upscale conditions and upscales if needed
@@ -795,123 +814,96 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         return torch_lower + (torch_upper - torch_lower) * x_normalised
 
 
-    # WARNING: this is VERY time consuming to run! It runs up to
-    # 3 * number of result_archive cells Pattern Searches!
-    #TODO: this would certainly be faster with a better search method, perhaps we could use botorch qUCB with beta = 0 and some costraints or something
+    # run MAPElites over
     def get_predicted_elites(
         self,
-        archive_boundaries, # pass in the result_archive.boundaries here!
-        outdir: Path
+        result_archive: GridArchive, # pass in the result_archive here!
+        outdir: Path,
+        num_iterations: int = 5000
     ) -> list[ArrayLike]:
 
         predicted_elites = []
         
-        dim0_boundaries = archive_boundaries[0]
-        dim1_boundaries = archive_boundaries[1]
+        dim0_boundaries = result_archive.boundaries[0]
+        dim1_boundaries = result_archive.boundaries[1]
 
-        # grab existing elites; we use these as a warm start for searching over the GP for elites for each cell
-        self.archive.retessellate((len(dim0_boundaries)-1, len(dim1_boundaries)-1))
-        archive_dataframe = ArchiveDataFrame(self.archive.data(return_type="pandas"))
-        all_measures = np.array([elite["measures"] for elite in archive_dataframe.iterelites()])
-        all_solutions = np.array([elite["solution"] for elite in archive_dataframe.iterelites()])
+        self.archive.retessellate(result_archive.dims) # have to retesselate so get_cell_probs works correctly
 
-        # define the max distance to try to reach a cell from. If we don't have an existing elite within this distance, we skip.
-        # somewhat arbitrarily setting this to 1/4 of the max distance possible (diagonal across the archive)
-        max_allowable_distance = math.sqrt(((dim0_boundaries[-1] - dim0_boundaries[0])**2 + (dim0_boundaries[-1] - dim0_boundaries[0])**2)) / 4
-        
-        termination = self._pymoo_mods["DefaultSingleObjectiveTermination"]()
+        # setup MAP Elites
+        prediction_archive = GridArchive(
+                solution_dim=self.solution_dim,
+                dims=result_archive.dims,
+                ranges=[(dim0_boundaries[0], dim0_boundaries[-1]), (dim1_boundaries[0], dim1_boundaries[-1])],
+            )
+        prediction_emitter = GaussianEmitter(
+                        archive=prediction_archive, # shared reference to the archive!
+                        x0=np.zeros(self.solution_dim), # point from which to begin sampling in MAP-Elites
+                        sigma=(np.asarray([self.upper_bounds]) - np.asarray([self.lower_bounds])) * 0.1,
+                        lower_bounds=self.lower_bounds,
+                        upper_bounds=self.upper_bounds,
+                        batch_size=50, # number of samples to take for simulation at each iteration
+                        seed=None,
+                    )
+        scheduler = Scheduler(prediction_archive, [prediction_emitter])
+        iteration = 0
 
-        # define a mini problem to optimise the GP obj.
-        # we add caching so we don't have to evaluate the GP repeatedly for a single X
-        # as it gets called repeatedly for calcing fitness, calcing constraints, etc. etc.
+        # replaces our "simulation" step; we take the GP prediction as "ground truth" to build a prediction map
+        # however, BOP additionally added the step of multiplying the predicted mean by the probability that the solution is in the predicted cell!
         def evaluate_gp(x):
-            nonlocal _cached_x, _cached_prediction
-            if _cached_x is not None and np.array_equal(x, _cached_x):
-                print("cache trigger!") # TODO: temp debug
-                return _cached_prediction
+            nonlocal dim0_boundaries, dim1_boundaries, prediction_archive
 
             x_norm = self._normalise(x)
             torch_x = torch.tensor(x_norm.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu")
 
             self._gp.eval()
             with torch.no_grad():
+                # "ground truth" is straight from GP
                 posterior = self._gp.posterior(torch_x)
-                mu_torch = posterior.mean
-            mu_unnorm = mu_torch.clone()
+                mu_torch = posterior.mean.clone()
+                std_torch = posterior.stddev.clone()
+
+            mu_unnorm = torch.empty_like(mu_torch)
+            std_unnorm = torch.empty_like(std_torch)
             mu_unnorm[:, 0] = mu_torch[:, 0] * self._obj_std + self._obj_mean
+            std_unnorm[:, 0] = std_torch[:, 0] * self._obj_std
             mu_unnorm[:, 1] = mu_torch[:, 1] * self._mea0_std + self._mea0_mean
+            std_unnorm[:, 1] = std_torch[:, 1] * self._mea0_std
             mu_unnorm[:, 2] = mu_torch[:, 2] * self._mea1_std + self._mea1_mean
-            prediction=mu_unnorm[0].numpy()
-            _cached_x = x.copy()
-            _cached_prediction = prediction
-            return _cached_prediction
+            std_unnorm[:, 2] = std_torch[:, 2] * self._mea1_std
 
-        for j in range(1, len(dim1_boundaries)):
-            for i in range(1, len(dim0_boundaries)):
+            mu = mu_unnorm.numpy().copy()
+            std = std_unnorm.numpy().copy()
+    
+            del mu_torch, std_torch, mu_unnorm, std_unnorm # del for safety
 
-                _cached_x = None
-                _cached_prediction = None
-
-                pymoo_problem = self._pymoo_mods["FunctionalProblem"](
-                    n_var=self.solution_dim,
-                    objs=lambda x: -evaluate_gp(x)[0], # pymoo minimises, we want maximise so invert value
-                    xl=self.lower_bounds,
-                    xu=self.upper_bounds,
-                    constr_ieq=[
-                        lambda x: dim0_boundaries[i-1] - evaluate_gp(x)[1],
-                        lambda x: evaluate_gp(x)[1] - dim0_boundaries[i], 
-                        lambda x: dim1_boundaries[j-1] - evaluate_gp(x)[2], 
-                        lambda x: evaluate_gp(x)[2] - dim1_boundaries[j]
-                    ]
-                )
-
-                # warm start from either existing elite or closest elite (as defined by measure space)
-                print(f"Predicting for cell: {dim0_boundaries[i-1]} to {dim0_boundaries[i]}, {dim1_boundaries[j-1]} to {dim1_boundaries[j]}")
-                cell_center = np.array([(dim0_boundaries[i-1] + dim0_boundaries[i])/2.0, (dim1_boundaries[j-1] + dim1_boundaries[j])/2.0])
-                occupied, elite_data = self.archive.retrieve_single(cell_center)
-                if (occupied):
-                    x0 = elite_data["solution"]
-                    #print("occupied found!")
-                else:
-                    distances = np.linalg.norm(all_measures - cell_center, axis=1)
-                    closest_idx = np.argmin(distances)
-                    if (distances[closest_idx] > max_allowable_distance):
-                        print("No valid elite in range. Skipping.")
-                        continue
-                    x0 = all_solutions[closest_idx]
-
-                # TODO make these args
-                restarts = 3
-                noise_scale = 0.02 # TODO: should really scale with number of cells in archive, so we don't perturb out of the cell boundaries too much
-                best_solution = None
-                best_result_F = None
-
-                for attempt in range(restarts+1):
-                    print(f"Attempt {attempt}...")
-                    if (attempt == 0):
-                        start_point = x0
-                    else:
-                        noise = np.random.normal(0, noise_scale * (self.upper_bounds - self.lower_bounds), size=self.solution_dim)
-                        start_point = np.clip(x0 + noise, self.lower_bounds, self.upper_bounds)
-
-                    optimizer = self._pymoo_mods["PatternSearch"](x0=start_point)
-                    
-                    result = self._pymoo_mods["minimize"](
-                        problem=pymoo_problem,
-                        algorithm=optimizer,
-                        termination=termination,
-                        copy_algorithm=False,
-                        seed=self._seed,
+            # get probability of sample being in predicted cell
+            cell_probs = self._get_cell_probs(
+                        mu[:, 1:], std[:, 1:], normalize=True, cutoff=True
                     )
 
-                    if result.X is not None and result.G.max() <= 0:
-                        if ((best_solution is None) or (result.F < best_result_F)):
-                            best_solution = result.X.copy()
-                            best_result_F = result.F
+            cell_idx = prediction_archive.index_of(mu[:, 1:])
 
-                if best_solution is not None:
-                    predicted_elites.append(best_solution)
+            return mu[:, 0] * cell_probs[:, cell_idx], mu[:, 1], mu[:, 2]
+
+
+        # run MAPElites over GP
+        while (iteration < num_iterations):
+            sols = scheduler.ask()
+            objs, meas = [], []
+            predictions = [evaluate_gp(model) for model in sols]
+            for pred_obj, pred_mea0, pred_mea1 in predictions:
+                objs.append(pred_obj.item())
+                meas.append([pred_mea0.item(), pred_mea1.item()])
+            scheduler.tell(objs, meas)
+
+            if (iteration % 50 == 0):
+                print(f"Iteration {iteration} / {num_iterations}")
+
+            iteration += 1
+
+        archive_as_dataframe = ArchiveDataFrame(prediction_archive.data(return_type="pandas"))
+        predicted_elites = np.array([elite["solution"] for elite in archive_as_dataframe.iterelites()])
 
         save_loc = str(outdir / "predicted_elites.npy")
         np.save(save_loc, predicted_elites)
-        return predicted_elites
+        return predicted_elites # return to actually be simulated and combined with result_archive

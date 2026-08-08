@@ -44,7 +44,7 @@ class LeggedController():
                                             -1.0 # backleft hip, -ve torque is down
                                         ]),
             num_rbfs: int = 10,
-            rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.75),
+            rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.67), # about 2/3 of distance between two points with 10 RBFs. Maintains (roughly) the same sort of activation profile of original paper with 20RBFs and rbf sigma of 0.2.
             sensor_mode: str = "unilateral",
             leg_geom_names: list = [  
                                         "frontright_leg_geom", # frontright hip
@@ -68,7 +68,7 @@ class LeggedController():
                 raise ValueError("Unrecognised sensor_mode. Only unilateral or per_joint supported.")
         self.sensor_mode = sensor_mode
 
-        # initialise CPG start state, RBFs placed equilaterally around circle, phase gaits, and torque sign masks
+        # initialise CPG start state
         self.cpg_state = np.array([0.1, 0.0]) 
 
         # rbfs equally spaced around unit circle
@@ -128,8 +128,8 @@ class LeggedController():
         # SO(2) oscillator for discrete time steps, with weight w_cpg taking place
         # of phi parameter. Original paper set it to exactly .01*pi*(time), here we learn it as a parameter instead.
         # See http://www.neurorobotik.de/downloads/publications/2003%20Pasemann%20-%20SO(2)-Networks%20as%20Neural%20Oscillators.pdf
-        # w_cpg = how many radians of rotation per timestep (0.04s). So at 0.05, freq is (2pi / 0.05)*0.04 = 5 secs per loop (0.2Hz). At 0.25, it's about once per second (1 Hz). 
-        # The original paper hardcoded ~0.3Hz, so we can vary a little bit down from there but a fair bit upwards, depending on what's optimal.
+        # w_cpg = how many radians of rotation per timestep (0.04s). So at 0.05, freq is (2pi / 0.05)*0.04 = 5 secs per loop (0.2Hz). At 0.35, it's about 1.4 times per second (1.4Hz).
+        # The original paper hardcoded ~0.3Hz, so we can vary a little bit down from there but a fair bit upwards, depending on what's optimal!
         x, y = self.cpg_state
         next_x = x * np.cos(self.w_cpg) - y * np.sin(self.w_cpg)
         next_y = x * np.sin(self.w_cpg) + y * np.cos(self.w_cpg)
