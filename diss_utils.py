@@ -106,14 +106,3 @@ def assert_single_threaded():
 """
 
 
-#TODO if time make this a singleton class that stores the max ram, this is a cheap stopgap
-def check_ram_usage(msg="", cur_max_ram=0.0, from_main=False):
-    process = psutil.Process(os.getpid())
-    cur_ram = process.memory_info().rss / (1024 ** 3) # in GB
-    if (cur_ram > cur_max_ram and from_main is False):
-        print(msg, cur_ram)
-        return cur_ram
-    if (from_main):
-        return cur_ram
-    
-    return cur_max_ram

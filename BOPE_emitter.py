@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from pathlib import Path
+import time
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -24,7 +25,7 @@ from ribs.emitters import EmitterBase, GaussianEmitter
 from ribs.schedulers import Scheduler
 from ribs.typing import BatchData, Float, Int
 
-from diss_utils import check_ram_usage
+from ramchecker import ram_checker
 
 # Adapted from the pyribs BayesianOptimisationEmitter for BOPElites.
 # See notes in BO_emitter for the benefits of switching to BOTORCH.
@@ -160,8 +161,6 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         )
 
         self._min_obj = min_obj
-
-        self._max_ram = 0
 
     @property
     def batch_size(self) -> Int:
@@ -481,40 +480,32 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
             membership probabilities for each solution.
         """
         # convert samples to normalised, torch
-        self._max_ram = check_ram_usage("_get_ejie_values start RAM:", self._max_ram)
         samples_norm = self._normalise(samples)
         torch_samples = torch.tensor(samples_norm.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu")
-        self._max_ram = check_ram_usage("_get_ejie_values torch_samples RAM:", self._max_ram)
         # grab means and stddevs from normalised torch GP
         # we chunk the list, as BOTORCH loads them all into memory simultaneously otherwise!
         mus_torch_list = []
         stds_torch_list = []
         chunk_size = 2000
-        self._max_ram = check_ram_usage("_get_ejie_values pre-posterior RAM:", self._max_ram)
         with torch.no_grad():
             for i in range(0, torch_samples.size(0), chunk_size):
-                self._max_ram = check_ram_usage(f"_get_ejie_values chunk {i} RAM:", self._max_ram)
                 chunk = torch_samples[i : i+chunk_size]
                 posterior = self._gp.posterior(chunk)
                 mus_torch_list.append(posterior.mean.clone())
                 stds_torch_list.append(posterior.stddev.clone())
+                ram_checker.update_max_ram()
             mus_torch = torch.cat(mus_torch_list, dim=0)
             stds_torch = torch.cat(stds_torch_list, dim=0)
 
         # GP values were standardised, so need to unstandardise/unnormalise
-        self._max_ram = check_ram_usage("_get_ejie_values ops RAM:", self._max_ram)
         mus_unnorm = torch.empty_like(mus_torch)
         stds_unnorm = torch.empty_like(stds_torch)
         mus_unnorm[:, 0] = mus_torch[:, 0] * self._obj_std + self._obj_mean
         stds_unnorm[:, 0] = stds_torch[:, 0] * self._obj_std
         mus_unnorm[:, 1] = mus_torch[:, 1] * self._mea0_std + self._mea0_mean
         stds_unnorm[:, 1] = stds_torch[:, 1] * self._mea0_std
-        self._max_ram = check_ram_usage("_get_ejie_values ops2 RAM:", self._max_ram)
         mus_unnorm[:, 2] = mus_torch[:, 2] * self._mea1_std + self._mea1_mean
-        stds_unnorm[:, 2] = stds_torch[:, 2] * self._mea1_std
-
-        self._max_ram = check_ram_usage("_get_ejie_values backtonorm RAM:", self._max_ram)
-        
+        stds_unnorm[:, 2] = stds_torch[:, 2] * self._mea1_std        
 
         # make numpy, then pass to identical logic to the prior original sklearn version
         mus = mus_unnorm.numpy().copy()
@@ -542,7 +533,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         else:
             ejie_by_cell = expected_improvements * cell_probs
 
-        self._max_ram = check_ram_usage("_get_ejie_values returning RAM:", self._max_ram)
+        ram_checker.update_max_ram()
 
         return ejie_by_cell, cell_probs
 
@@ -602,6 +593,8 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                         opt_cell_probs.squeeze()
                     )
                     found_positive_ejie = True
+
+                ram_checker.update_max_ram()
 
             # if didn't find any positive ejie after optimization, increments
             # over-specification count
@@ -702,8 +695,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         self._dataset["measures"] = np.vstack(
             (self._dataset["measures"], data["measures"])
         )
-
-        self._max_ram = check_ram_usage("tell start RAM:", self._max_ram)
+        ram_checker.update_max_ram()
 
         # per BOTORCH best practice: (see https://botorch.readthedocs.io/en/stable/models.html#botorch.models.gp_regression.SingleTaskGP)
         # normalise solutions to range 0-1
@@ -712,12 +704,10 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         # standardise y
         Y_train_obj = torch.tensor(self._dataset["objective"], dtype=torch.float64, device="cpu")
         standardised_Y_train_obj = (Y_train_obj - Y_train_obj.mean()) / (Y_train_obj.std() + 1e-8)
-        self._max_ram = check_ram_usage("tell ops1 RAM:", self._max_ram)
         Y_train_mea_0 = torch.tensor(self._dataset["measures"][:,0], dtype=torch.float64, device="cpu")
         standardised_Y_train_mea_0 = (Y_train_mea_0 - Y_train_mea_0.mean()) / (Y_train_mea_0.std() + 1e-8)
         Y_train_mea_1 = torch.tensor(self._dataset["measures"][:,1], dtype=torch.float64, device="cpu")
         standardised_Y_train_mea_1 = (Y_train_mea_1 - Y_train_mea_1.mean()) / (Y_train_mea_1.std() + 1e-8)
-        self._max_ram = check_ram_usage("tell ops2 RAM:", self._max_ram)
         
 
         # store relevant values for unnormalising later when needed
@@ -729,11 +719,9 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         self._mea1_mean = Y_train_mea_1.mean()
         self._mea1_std = Y_train_mea_1.std() + 1e-8
 
-        self._max_ram = check_ram_usage("tell ops3 RAM:", self._max_ram)
 
         # create list like: [obj_0, mea0_0, mea1_0], [obj1, mea0_1, mea1-1], ...
         standardised_Y = torch.stack([standardised_Y_train_obj.squeeze(-1), standardised_Y_train_mea_0, standardised_Y_train_mea_1], dim=-1)
-        self._max_ram = check_ram_usage("tell ops4 RAM:", self._max_ram)
 
         # note: we use SingleTaskGP with separate independent outputs rather than MultiTaskGP
         # (i.e. conditionally-dependent outputs). This is because:
@@ -770,13 +758,12 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
             likelihood=likelihood,
             covar_module=matern
         )
-        self._max_ram = check_ram_usage("tell postGP RAM:", self._max_ram)
          # optimise GP parameters and fit it
         mll = ExactMarginalLogLikelihood(self._gp.likelihood, self._gp)
         #default is 5 from documentation. However, it stops as soon as it works unless you set pick_best_of_all_attempts=True
         #so we can have more restarts without additional cost. Given the lengthiness of these experiments, having it fail halfway through is not worth it.
         fit_gpytorch_mll(mll, max_attempts=10)
-        self._max_ram = check_ram_usage("tell postMLL RAM:", self._max_ram)
+        ram_checker.update_max_ram()
         # put GP into evaluation mode, not training mode
         self._gp.eval()
         self._gp.likelihood.eval()
@@ -819,7 +806,7 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
         self,
         result_archive: GridArchive, # pass in the result_archive here!
         outdir: Path,
-        num_iterations: int = 5000
+        predictions_time_to_run: int = 10800
     ) -> list[ArrayLike]:
 
         predicted_elites = []
@@ -845,7 +832,6 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
                         seed=None,
                     )
         scheduler = Scheduler(prediction_archive, [prediction_emitter])
-        iteration = 0
 
         # replaces our "simulation" step; we take the GP prediction as "ground truth" to build a prediction map
         # however, BOP additionally added the step of multiplying the predicted mean by the probability that the solution is in the predicted cell!
@@ -886,8 +872,12 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
             return mu[:, 0] * cell_probs[:, cell_idx], mu[:, 1], mu[:, 2]
 
 
+        loop_start_time = time.time()
+        elapsed_time = 0
+        iteration = 0
+
         # run MAPElites over GP
-        while (iteration < num_iterations):
+        while (elapsed_time < predictions_time_to_run):
             sols = scheduler.ask()
             objs, meas = [], []
             predictions = [evaluate_gp(model) for model in sols]
@@ -897,9 +887,10 @@ class CustomBayesianOptimizationEmitter(EmitterBase):
             scheduler.tell(objs, meas)
 
             if (iteration % 50 == 0):
-                print(f"Iteration {iteration} / {num_iterations}")
+                print(f"Spent {elapsed_time} / {predictions_time_to_run} in {iteration} itrs")
 
             iteration += 1
+            elapsed_time = time.time() - loop_start_time
 
         archive_as_dataframe = ArchiveDataFrame(prediction_archive.data(return_type="pandas"))
         predicted_elites = np.array([elite["solution"] for elite in archive_as_dataframe.iterelites()])

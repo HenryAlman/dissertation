@@ -128,7 +128,7 @@ class LeggedController():
         # SO(2) oscillator for discrete time steps, with weight w_cpg taking place
         # of phi parameter. Original paper set it to exactly .01*pi*(time), here we learn it as a parameter instead.
         # See http://www.neurorobotik.de/downloads/publications/2003%20Pasemann%20-%20SO(2)-Networks%20as%20Neural%20Oscillators.pdf
-        # w_cpg = how many radians of rotation per timestep (0.04s). So at 0.05, freq is (2pi / 0.05)*0.04 = 5 secs per loop (0.2Hz). At 0.35, it's about 1.4 times per second (1.4Hz).
+        # w_cpg = how many radians of rotation per timestep (0.04s). So at 0.05, freq is (2pi / 0.05)*0.04 = 5 secs per loop (0.2Hz). At 0.25, it's about 1Hz.
         # The original paper hardcoded ~0.3Hz, so we can vary a little bit down from there but a fair bit upwards, depending on what's optimal!
         x, y = self.cpg_state
         next_x = x * np.cos(self.w_cpg) - y * np.sin(self.w_cpg)

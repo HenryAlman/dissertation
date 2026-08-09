@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Collection
+import gc
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -12,18 +13,18 @@ from botorch.models import SingleTaskGP
 from gpytorch.constraints import Interval
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.mlls import ExactMarginalLogLikelihood
+import gpytorch.settings
 from botorch.models.utils.gpytorch_modules import get_covar_module_with_dim_scaled_prior
 from botorch.fit import fit_gpytorch_mll
 from botorch.acquisition import qLogExpectedImprovement
 from botorch.optim import optimize_acqf
-
 
 from ribs._utils import check_batch_shape, check_finite, validate_batch
 from ribs.archives import GridArchive
 from ribs.emitters._emitter_base import EmitterBase
 from ribs.typing import BatchData, Float, Int
 
-from diss_utils import check_ram_usage
+from ramchecker import ram_checker
 
 # Adapted from the pyribs BayesianOptimisationEmitter for BOPElites.
 # - Functionally, removed unnecessary operations (e.g. upscaling, multi-output GP -> single-output GP), 
@@ -117,8 +118,6 @@ class BOEmitter(EmitterBase):
         self._prev_numcells = len(self.archive)
         self._numitrs_noprogress = 0
 
-        self._max_ram = 0
-
     @property
     def batch_size(self) -> Int:
         """Number of solutions to return in :meth:`ask`."""
@@ -193,6 +192,12 @@ class BOEmitter(EmitterBase):
         return rescaled_samples
         
 
+    # note: don't worry about the torch.no_grad(), dels, gpytorch settings, and cache clears etc.
+    # these are to restrain memory as much as possible, as Pytorch is *extremely* greedy with holding onto
+    # allocations otherwise whenever you use optimize_acqf and memory usage just grows indefinitely until OOM kill.
+    # Because we identify separate x0s via sobol sample manually, and call optimise_acqf fully sequentially, 
+    # We don't need to know about the other x0s' gradients and calculations etc. on any given loop.
+    # Similarly, because we retrain our GP between every ask call, we don't
     def ask(self) -> np.ndarray:
         # first run only: grab sobol points
         if self.num_evals == 0:
@@ -202,95 +207,113 @@ class BOEmitter(EmitterBase):
         # a recommended improvement over EI which helps avoid vanishing gradient issues
         # potential future improvement as noted at top would be incorporating qLogNoiseExpectedImprovement
         # to handle noisy domains
-        self._max_ram = check_ram_usage("ask start RAM:", self._max_ram)
-        # we use qLogEI not LogEI even though we force sequential with q=1 etc. to match BOP
-        # this is because we can still provide *conditioning* via set_X_pending below
-        # NOTE this is an advantage over the BOP implementation that should be noted in writeup
-        acq_func = qLogExpectedImprovement(
-            model=self._gp,
-            best_f=self._best_standardised_fitness
-        )
+
+        bounds = torch.stack([torch.zeros(self._solution_dim), torch.ones(self._solution_dim)]).to(device="cpu", dtype=torch.float64)
 
         # to keep close to sequential-style BOP implementation for fairness, and to reduce memory consumption, we:
-        
-        optimised_samples = []
+        optimised_samples = [] 
         optimised_samples_acq_values = []
+        while len(optimised_samples) < self.batch_size: 
+            # we use qLogEI not LogEI even though we force sequential with q=1 etc. to match BOP
+            # this is because we can still provide *conditioning* via set_X_pending below
+            # NOTE this is an advantage over the BOP implementation that should be noted in writeup
+            with torch.no_grad(): 
+                acq_func = qLogExpectedImprovement(
+                    model=self._gp,
+                    best_f=self._best_standardised_fitness
+                )
+                acq_func.eval()
+                samples = self._sample_n_rescale(self.num_sobol_samples) 
+                normalised_samples = self._normalise(samples) 
 
-        # ... 1. for each member of the batch...
-        for batch_idx in range(self.batch_size):
+                chunk_size = 1000 
+                acq_values_list = [] 
+                torch_samples = torch.tensor(normalised_samples.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu") 
+                
+                # BoTorch uses conditioning such that already-selected points collapse the 
+                # # acqfunc at that point, to avoid re-sampling the same point over and over 
+                # # TODO: BOP-Elites does *not* do this (at least in pyribs); key diff to mention in writeup. 
+                if len(optimised_samples) > 0: 
+                    acq_func.set_X_pending(torch.stack(optimised_samples)) 
 
-            # ... condition the acquisition function for the samples we've already selected ...
-            # TODO: BOP-Elites does *not* do this (at least in pyribs); key diff to mention in writeup.
-            if len(optimised_samples) > 0:
-                acq_func.set_X_pending(torch.stack(optimised_samples))
-
-            self._max_ram = check_ram_usage("ask loop start RAM:", self._max_ram)
-
-            # ... get sobol samples and assess them ...
-            samples = self._sample_n_rescale(self.num_sobol_samples)
-            normalised_samples = self._normalise(samples)
-            torch_samples = torch.tensor(normalised_samples.reshape(-1, self.solution_dim), dtype=torch.float64, device="cpu")
-            self._max_ram = check_ram_usage("ask loop sample RAM:", self._max_ram)
-
-            # ... (in batches to save memory) ...
-            chunk_size = 2000
-            acq_values_list = []
-            with torch.no_grad():
-                for i in range(0, torch_samples.size(0), chunk_size):
-                    self._max_ram = check_ram_usage(f"ask loop chunk {i} RAM:", self._max_ram)
-                    chunk = torch_samples[i : i+chunk_size]
-                    chunk_unsq = chunk.unsqueeze(1) # add dimension for q (in this case q=1) BoTorch needs
-                    acq_values = acq_func(chunk_unsq) # .... but do it WITH conditioning from the acq func!
-                    acq_values_list.append(acq_values)
-
-            torch_acqs = torch.cat(acq_values_list)
-
-            # 2. then keep the best search_nrestarts points from that
-            _, top_indices = torch.topk(torch_acqs, k=self._search_nrestarts)
-            search_starting_points = torch_samples[top_indices]
-            self._max_ram = check_ram_usage("ask loop ops RAM:", self._max_ram)
+                for i in range(0, torch_samples.size(0), chunk_size): 
+                    chunk = torch_samples[i : i+chunk_size] 
+                    chunk_unsq = chunk.unsqueeze(1) # add dimension for q (in this case q=1) BoTorch needs 
+                    acq_values = acq_func(chunk_unsq) 
+                    acq_values_list.append(acq_values) 
+                    ram_checker.update_max_ram()
+                torch_acqs = torch.cat(acq_values_list) 
+                
+                # 2. keep the best search_nrestarts points 
+                _, top_indices = torch.topk(torch_acqs, k=self._search_nrestarts) 
+                search_starting_points = torch_samples[top_indices] 
 
             best_candidate = None
-            best_acq = torch.tensor(-float("inf"), dtype=torch.float64, device="cpu") # init at -inf so first found point is always greater
+            best_acq = -float('inf')
 
-            # 3. then pass these as initial points to the BoTorch acq_func ONE AT A TIME with no "restarts" - we're handling the restarting via x0 loop
-            for x0 in search_starting_points:
-                self._max_ram = check_ram_usage("ask pre-optimise_acqf RAM:", self._max_ram)
-                initial_condition = x0.unsqueeze(0).unsqueeze(0) # add dimensions for BoTorch - it expects dimensions for q and n-restarts, which we have set to 1 each
-                # note, the GP data is normalised/standardised, so we set bounds to 0-1
-                candidate, acq_value = optimize_acqf(
-                    acq_function=acq_func,
-                    bounds=torch.stack([torch.zeros(self._solution_dim), torch.ones(self._solution_dim)]).to(device="cpu", dtype=torch.float64),
-                    q=1, # identify a single candidate
-                    num_restarts=1, # do so once, we handle restarts by having a list of x0s to try
-                    batch_initial_conditions=initial_condition, # pass our "custom" x0 as start point instead of sampling for it
-                    raw_samples=None # as we're using batch_initial_conditions
-                )
-                self._max_ram = check_ram_usage("ask post-optimise_acqf RAM:", self._max_ram)
+            # 3. pass these as initial points to the BoTorch acq_func ONE AT A TIME with no "restarts" - we're handling the restarting! 
+            with gpytorch.settings.detach_test_caches(True):
+                for x0 in search_starting_points:
 
-                if (acq_value > best_acq):
-                    best_acq = acq_value.detach().clone() # we detach and clone to stop this being tracked by autograd!
-                    best_candidate = candidate.squeeze(0).squeeze(0).detach().clone() # also undo botorch dimensions
+                    initial_condition = x0.unsqueeze(0).unsqueeze(0)  # add dimensions for BoTorch - it expects dimensions for q and n-restarts, which we have set to 1 each
+                    candidate, acq_value = optimize_acqf(
+                        acq_function=acq_func,
+                        bounds=bounds,
+                        q=1,
+                        num_restarts=1,
+                        batch_initial_conditions=initial_condition,
+                        raw_samples=None,
+                    )
+
+                    with torch.no_grad():
+                        if acq_value.item() > best_acq:
+                            best_candidate = candidate.squeeze(0).squeeze(0).detach().clone()  # undo botorch dimensions
+                            best_acq = acq_value.item()
+
+                        del candidate, acq_value, initial_condition
+
+                        if hasattr(acq_func, "model"):
+                            if hasattr(acq_func.model, "prediction_strategy") and acq_func.model.prediction_strategy is not None:
+                                acq_func.model.prediction_strategy = None
+                            for m in acq_func.model.modules():
+                                if hasattr(m, "_memoize_cache"):
+                                    m._memoize_cache.clear()
+
+                    ram_checker.update_max_ram()
+
+            if best_candidate is None: # if no candidates found somehow
+                acq_func.set_X_pending(None)
+                del search_starting_points, acq_func, torch_samples, top_indices
+                gc.collect()
+                break
 
             optimised_samples.append(best_candidate)
             optimised_samples_acq_values.append(best_acq)
-            acq_func.set_X_pending(None) # clear the pending list, so we don't re-add same points over and over
+
+            acq_func.set_X_pending(None)
+            del acq_func, torch_samples, top_indices, search_starting_points
+            gc.collect()
+
+        with torch.no_grad():
+            indices = np.argsort(optimised_samples_acq_values)[-self.batch_size:]
+            torch_optimised_samples = torch.stack(optimised_samples).detach()
+            sorted_optimised_samples = torch_optimised_samples[indices]
+            unnormalised_optimised_samples = [] 
+            for normalised_sample in sorted_optimised_samples: 
+                # and now need to unnormalise them before returning 
+                unnormalised_optimised_samples.append(self._unnormalise(normalised_sample).numpy()) 
 
 
-        _, indices = torch.topk(torch.stack(optimised_samples_acq_values), k=self.batch_size)
-        torch_optimised_samples = torch.stack(optimised_samples)
-        sorted_optimised_samples = torch_optimised_samples[indices]
-        
-        unnormalised_optimised_samples = []
-        for normalised_sample in sorted_optimised_samples:
-            # and now need to unnormalise them before returning
-            unnormalised_optimised_samples.append(self._unnormalise(normalised_sample).numpy())
+            del indices, torch_optimised_samples, sorted_optimised_samples, bounds
 
-        self._max_ram = check_ram_usage("ask return RAM:", self._max_ram)
+            if hasattr(self._gp, "prediction_strategy") and self._gp.prediction_strategy is not None:
+                self._gp.prediction_strategy = None
 
-        del acq_func # manually clear for safety
+            for m in self._gp.modules():
+                if hasattr(m, "_memoize_cache"):
+                    m._memoize_cache.clear()
 
-        return np.array(unnormalised_optimised_samples)
+            return np.array(unnormalised_optimised_samples)
 
     def tell(
         self,
@@ -321,15 +344,14 @@ class BOEmitter(EmitterBase):
         self._dataset["measures"] = np.vstack(
             (self._dataset["measures"], data["measures"])
         )
-
-        self._max_ram = check_ram_usage("tell start RAM:", self._max_ram)
+        ram_checker.update_max_ram()
+    
         # per BOTORCH best practice: (see https://botorch.readthedocs.io/en/stable/models.html#botorch.models.gp_regression.SingleTaskGP)
         # normalise solutions to range 0-1
         normalised_solutions = self._normalise(self._dataset["solution"])
         X_train = torch.tensor(normalised_solutions, dtype=torch.float64, device="cpu")
         Y_train = torch.tensor(self._dataset["objective"], dtype=torch.float64, device="cpu")
         # standardise y
-        self._max_ram = check_ram_usage("tell ops1 RAM:", self._max_ram)
         standardised_Y = (Y_train - Y_train.mean()) / (Y_train.std() + 1e-8)
         # note, we're using qLogEI acqf func, expects a "best" fitness to compare to
         # but this is taken as ground truth, i.e. accounts for no noise.
@@ -337,7 +359,6 @@ class BOEmitter(EmitterBase):
         # but this requires manually provided noise levels
         self._best_standardised_fitness=standardised_Y.max()
 
-        self._max_ram = check_ram_usage("tell preGP RAM:", self._max_ram)
 
         # use BOTORCH defaults, but with Matern 5/2 and a forcibly constrained low noise level to prevent covariance collapse in deterministic environment,
         # We want to keep defaults as they implemented findings from Vanilla Bayesian Optimization Performs Great in High Dimensions
@@ -358,13 +379,12 @@ class BOEmitter(EmitterBase):
             likelihood=likelihood,
             covar_module=matern
         )
-        self._max_ram = check_ram_usage("tell preMLL RAM:", self._max_ram)
         # optimise GP parameters and fit it
         mll = ExactMarginalLogLikelihood(self._gp.likelihood, self._gp)
         #default is 5 from documentation. However, it stops as soon as it works unless you set pick_best_of_all_attempts=True
         #so we can have more restarts without additional cost. Given the lengthiness of these experiments, having it fail halfway through is not worth it.
         fit_gpytorch_mll(mll, max_attempts=10)
-        self._max_ram = check_ram_usage("tell postMLL return RAM:", self._max_ram)
+        ram_checker.update_max_ram()
 
         # put GP into evaluation mode, not training mode
         self._gp.eval()

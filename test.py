@@ -32,7 +32,7 @@ maze_params = {
         "min_obj": min_obj
     }
 
-xml_file = "/home/henry/dissertation_5thAug/rangefinder_hex.xml"
+xml_file = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"
 
 num_legs = 6
 gait_phases = np.array([

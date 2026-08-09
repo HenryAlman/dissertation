@@ -55,7 +55,8 @@ from mujoco_env_wrapper import MujocoEnvWrapper
 
 from legged_controller import LeggedController
 
-from diss_utils import save_heatmap, save_ccdf, save_metrics, check_ram_usage
+from diss_utils import save_heatmap, save_ccdf, save_metrics
+from ramchecker import ram_checker
 
 
 def simulate(
@@ -98,7 +99,7 @@ def simulate(
     done = False # track whether session was terminated or truncated
     
     # initialise
-    if (xml_file == "/home/henry/dissertation_5thAug/new_racecar.xml"):
+    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
         # uses simple/direct policy
         w_end = 8
         weights = model[:w_end].reshape(4, 2)
@@ -139,7 +140,7 @@ def simulate(
         rangefinders = 1.0 - np.clip(rangefinders_data / maze_max_dist, 0.0, 1.0)
 
         # CAR:
-        if (xml_file == "/home/henry/dissertation_5thAug/new_racecar.xml"):
+        if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
             velocimeter_x = mujoco_data.sensordata[3].copy()
             velocimeter_y = mujoco_data.sensordata[4].copy()
             xy_speed_ratio = np.clip((math.sqrt(velocimeter_x**2 + velocimeter_y**2) / 1.5), 0.0, 1.0) # top speed is ~1.5
@@ -171,6 +172,7 @@ def simulate(
         if done:
             final_x_pos = info["x_pos"]
             final_y_pos = info["y_pos"]
+            ram_checker.update_max_ram()
 
     env.close() # must close env after every sim!
 
@@ -404,7 +406,8 @@ def run_search(
         scheduler.tell(objs, meas, chars=chars)
         alg_time += time.time() - loop_time
 
-        ram_usage = check_ram_usage(from_main=True)
+        ram_checker.update_max_ram()
+        ram_usage = ram_checker.get_max_ram()
 
         # Metrics.
         total_elapsed_time = time.time() - start_time
@@ -469,18 +472,17 @@ def run_search(
 
 
 def mujoco_main(
-    algorithm: str = "BOPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
+    algorithm: str = "BayesOpt", # algorithm to use: MAPElites, BayesOpt, BOPElites
     #TODO: return this to empty dict string thing when uploading to cluster
-    algorithm_params = {"search_nrestarts": 10, "entropy_ejie": False, "make_prediction_archive": True, "upscale_schedule": ((5,5),(10,10))}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
+    algorithm_params = {"search_nrestarts":10}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/home/henry/dissertation_5thAug/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     sensor_mode: str = "unilateral", # sensor mode to use, see legged controller
     num_rbfs: int = 10, # number of rbfs to use in legged controller
-    #TODO: consider change default here and in legged_controller to a value based on the General Neural Locomotion Framework paper; here, it's 75% of dist between each RBF
     rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.67), # rbf_sigma, see LeggedController for explanation.
     env_seed: int = 52, # seed for creating the simulation environment
-    time_to_run: int = 10, # seconds to run for, default to 60 to avoid costly mistakes!
+    time_to_run: int = 43200, # seconds to run for, default to 60 to avoid costly mistakes!
     log_freq: int = 5, # log metrics every X iterations
     n_emitters: int = 1, # number of emitters to use
     batch_size: int = 5, # number of samples to take for simulation at each iteration (per emitter!)
@@ -544,13 +546,13 @@ def mujoco_main(
     }
 
     # XML-BASED PARAMS:
-    if (xml_file == "/home/henry/dissertation_5thAug/new_racecar.xml"):
+    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
         solution_dim = 10
         lower_bounds=np.full(solution_dim, -1) # raw weights from inputs to outputs. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         upper_bounds=np.full(solution_dim, 1) # raw weights. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         xml_str = "car"
         controller_params = None # doesn't get used for car test case
-    elif (xml_file == "/home/henry/dissertation_5thAug/rangefinder_ant.xml"):
+    elif (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml"):
         num_legs = 4
         gait_phases = np.array([
                                 0.0, # frontright
@@ -585,22 +587,22 @@ def mujoco_main(
             rbfs_num_weights = int(2 * num_rbfs)
             solution_dim = 5 + rbfs_num_weights # 1 x w_cpg, num_rbf*2 x for hip/ankle, 4x wfront/side sensors for hip/ankle
             # cpg freq, rbf-torque weights, sensor reflex weights
-            # w_cpg: 0.05-0.35 = 0.2Hz to 1.4Hz. 
-            # w_locomotion: -1 to 1. RBF activations ~1.6 at a time with 10 RBFs, so w/ maxed w_locomotion CPGRBF part can output up to tanh(1.6) = 0.92
+            # w_cpg: 0.05-0.25 = 0.2Hz to 1Hz. 
+            # w_locomotion: -0.8 to 0.8. RBF activations ~1.6 at a time with 10 RBFs, so w/ maxed w_locomotion CPGRBF part can output up to tanh(1.6) = ~0.85
             # w_sensors: -1.2 to 1.2. 
-            # # # Front: if wall close, sensor reads 1.0. 1.0 * -1.2 = -1.2, shifted to -0.2 but clipped to 0.2. Output only 20% of cpgrbf power when wall ~2m away. With lower weight, say 1.0 * -0.6 + 1 = 0.4, so 40% of power when wall is immediately close. etc.
+            # # # Front: if wall close, sensor reads 1.0. 1.0 * -1.5 = -1.2, shifted to -0.2 but clipped to 0.2. Output only 20% of cpgrbf power when wall ~2m away. With lower weight, say 1.0 * -0.6 + 1 = 0.4, so 40% of power when wall is immediately close. etc.
             # # # Side: if left close right far, sensor reads 1.0. Same maths as above.
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(4, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
-            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 1.0), np.full(4, 1.2)])
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(4, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
+            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(4, 1.2)])
         elif (sensor_mode == "per_joint"):
             rbfs_num_weights = int(2 * num_rbfs)
             sensors_num_weights = int(2 * num_legs * 2) # 2 per joint, one for front and one for side sensors
             solution_dim = 1 + rbfs_num_weights + sensors_num_weights
             # see under hex for logic for 
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(sensors_num_weights, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
-            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 1.0), np.full(sensors_num_weights, 1.2)])
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(sensors_num_weights, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
+            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(sensors_num_weights, 1.2)])
         else: raise ValueError("Unknown sensor_mode!")
-    elif(xml_file == "/home/henry/dissertation_5thAug/rangefinder_hex.xml"):
+    elif(xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
         num_legs = 6
         gait_phases = np.array([
                                 0.0, # frontright
@@ -639,7 +641,7 @@ def mujoco_main(
                             "midleft_ankle_geom", #midleft ankle
                         ]
         xml_str = "hex"
-        archive_dims = [20, 20] #TODO: tune
+        archive_dims = [30, 30] #TODO: tune
         # higher range of control costs for hex because of extra legs!
         # experimentally, it can't seem to achieve as low an average height as the Ant either
         archive_ranges = [(0.35, 0.65), (0.0, 1.5)]  # TODO: tune
@@ -647,14 +649,14 @@ def mujoco_main(
             rbfs_num_weights = int(2 * num_rbfs)
             solution_dim = 5 + rbfs_num_weights
             # cpg freq, rbf-torque weights, sensor reflex weights
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(4, -1.2)]) 
-            upper_bounds=np.hstack([0.35, np.full(rbfs_num_weights, 1.0), np.full(4, 1.2)])
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(4, -1.2)]) 
+            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(4, 1.2)])
         elif (sensor_mode == "per_joint"):
             rbfs_num_weights = int(2 * num_rbfs)
             sensors_num_weights = int(2 * num_legs * 2) # 2 per joint, one for front and one for side sensors
             solution_dim = 1 + rbfs_num_weights + sensors_num_weights
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -1.0), np.full(sensors_num_weights, -1.2)]) 
-            upper_bounds=np.hstack([0.35, np.full(rbfs_num_weights, 1.0), np.full(sensors_num_weights, 1.2)])
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(sensors_num_weights, -1.2)]) 
+            upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(sensors_num_weights, 1.2)])
         else: raise ValueError("Unknown sensor_mode!")
     else:
         raise ValueError("Unknown XML!")
@@ -700,7 +702,7 @@ def mujoco_main(
         (
             Path("dissertation_logs")
             / Path(__file__).stem
-            / f"{algorithm}_{maze_str}_{xml_str}"
+            / f"{algorithm}_{maze_str}_{xml_str}_{sensor_mode}"
             / datetime.now().strftime(f"%Y-%m-%d_%H-%M-%S_seed-{seed}_{random.randint(100000)}") # add randint just in case two scripts get kicked off at exactly same time in batch
         )
         if outdir is None
@@ -805,20 +807,19 @@ def run_evaluation(
         )
 
 
-# NOTE: this is very very slow!
 # NOTE: this updates scheduler.result_archive by adding the simulated predicted elites in! Do not call until after you've exported/saved result_archive!
 def create_predicted_archive(
-        controller_params: dict[str, Any],
-        maze_params: dict[str, Any],
-        xml_file: str,
-        env_seed: int,
-        scheduler: Scheduler,
-        outdir: Path,
-        num_prediction_iterations: int = 100
+        controller_params: dict[str, Any], # ensure same as for experiment
+        maze_params: dict[str, Any], # ensure same as for experiment
+        xml_file: str, # ensure same as for experiment
+        env_seed: int, # ensure same as for experiment
+        scheduler: Scheduler, # scheduler containing original emitters / result_archive
+        outdir: Path, # path to load/save stuff to/from
+        predictions_time_to_run: int = 10800 # seconds to run MAPElites over GP for prediction map production
 ) -> None:
     log.info("Beginning Predictive Map")
     # note uses batch size 50, so 50*num_iterations samples will be taken on GP
-    sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive, outdir, num_prediction_iterations)
+    sols = scheduler.emitters[0].get_predicted_elites(scheduler.result_archive, outdir, predictions_time_to_run)
     log.info("Finished Predictive Map. Simulating...")
 
     results = [simulate(model, maze_params, xml_file, controller_params=controller_params, seed=env_seed) for model in sols]
@@ -842,7 +843,7 @@ def create_predicted_archive(
     save_ccdf(scheduler.result_archive, outdir / "obs_and_predicted_archive_ccdf.png")
     save_heatmap(scheduler.result_archive, outdir / "obs_and_predicted_archive_heatmap.png", maze_params["min_obj"], scheduler.result_archive.stats.obj_max)
     log.info(
-                "=== Predicted Archive Stats ===\n"
+                "=== Predicted Archive Final Stats ===\n"
                 "QD-Score: {}\n"
                 "Max Reward: {}\n"
                 "Coverage: {}\n"
