@@ -472,17 +472,17 @@ def run_search(
 
 
 def mujoco_main(
-    algorithm: str = "BayesOpt", # algorithm to use: MAPElites, BayesOpt, BOPElites
+    algorithm: str = "BOPElites", # algorithm to use: MAPElites, BayesOpt, BOPElites
     #TODO: return this to empty dict string thing when uploading to cluster
-    algorithm_params = {"search_nrestarts":10}, # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
+    algorithm_params = "{}", # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     sensor_mode: str = "unilateral", # sensor mode to use, see legged controller
     num_rbfs: int = 10, # number of rbfs to use in legged controller
     rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.67), # rbf_sigma, see LeggedController for explanation.
     env_seed: int = 52, # seed for creating the simulation environment
-    time_to_run: int = 43200, # seconds to run for, default to 60 to avoid costly mistakes!
+    time_to_run: int = 60, # seconds to run for, default to 60 to avoid costly mistakes!
     log_freq: int = 5, # log metrics every X iterations
     n_emitters: int = 1, # number of emitters to use
     batch_size: int = 5, # number of samples to take for simulation at each iteration (per emitter!)
@@ -581,8 +581,8 @@ def mujoco_main(
                                 "backleft_ankle_geom" # backleft ankle
                             ]
         xml_str = "ant"
-        archive_dims = [20, 20] #TODO: tune
-        archive_ranges = [(0.25, 0.65), (0.0, 1.0)] # TODO: tune
+        archive_dims = [40, 30] #TODO: tune
+        archive_ranges = [(0.3, 0.7), (0.1, 1.5)] # TODO: tune
         if (sensor_mode == "unilateral"):
             rbfs_num_weights = int(2 * num_rbfs)
             solution_dim = 5 + rbfs_num_weights # 1 x w_cpg, num_rbf*2 x for hip/ankle, 4x wfront/side sensors for hip/ankle
@@ -641,15 +641,14 @@ def mujoco_main(
                             "midleft_ankle_geom", #midleft ankle
                         ]
         xml_str = "hex"
-        archive_dims = [30, 30] #TODO: tune
+        archive_dims = [40, 40] #TODO: tune
         # higher range of control costs for hex because of extra legs!
-        # experimentally, it can't seem to achieve as low an average height as the Ant either
-        archive_ranges = [(0.35, 0.65), (0.0, 1.5)]  # TODO: tune
+        archive_ranges = [(0.3, 0.7), (0.0, 2.0)]  # TODO: tune
         if (sensor_mode == "unilateral"):
             rbfs_num_weights = int(2 * num_rbfs)
             solution_dim = 5 + rbfs_num_weights
             # cpg freq, rbf-torque weights, sensor reflex weights
-            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(4, -1.2)]) 
+            lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(4, -1.2)])
             upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(4, 1.2)])
         elif (sensor_mode == "per_joint"):
             rbfs_num_weights = int(2 * num_rbfs)
@@ -741,10 +740,14 @@ def mujoco_main(
         save_heatmap(scheduler.result_archive, outdir / "result_archive_heatmap.png", maze_params["min_obj"], scheduler.result_archive.stats.obj_max)
         save_metrics(outdir, passive_metrics, "result")
 
-    # save emitter (including its archive, GP, etc.) to load and use later.
+    # save emitter (including its archive, GP, etc.) to load and use later, and result archive if 
     if (save_emitter_0):
         with open(outdir / "emitter0.sav", "wb") as f:
             pickle.dump(scheduler._emitters[0], f)
+        # for BOPElites, additionally save the separate result_archive
+        if (algorithm == "BOPElites"):
+            with open(outdir / "result_archive.sav", "wb") as f:
+                pickle.dump(scheduler.result_archive, f)
 
     # if enabled, use BOP-Elites prediction map to predict and then actually assess elites at the final result_archive resolution
     if (algorithm == "BOPElites" and algorithm_params["make_prediction_archive"]):
@@ -773,9 +776,17 @@ def run_evaluation(
         maze_params = pickle.load(f)
 
     if (use_saved_emitter_0):
-        with open(outdir / "emitter0.sav", "rb") as f:
-            emitter = pickle.load(f)
-        df = ArchiveDataFrame(emitter.archive.data(return_type="pandas"))
+        # if it was a BOPElites run, use the saved result archive
+        result_archive_path = outdir / "result_archive.sav"
+        if result_archive_path.is_file():
+            with open(result_archive_path, "rb") as f:
+                archive_to_use = pickle.load(f)
+        else:
+            # else use archive from saved emitter, as there was no separate result archive
+            with open(outdir / "emitter0.sav", "rb") as f:
+                emitter = pickle.load(f)
+                archive_to_use = emitter.archive
+        df = ArchiveDataFrame(archive_to_use.data(return_type="pandas"))
     else:
         df = ArchiveDataFrame(pd.read_csv(outdir / "archive.csv"))
 
@@ -815,7 +826,7 @@ def create_predicted_archive(
         env_seed: int, # ensure same as for experiment
         scheduler: Scheduler, # scheduler containing original emitters / result_archive
         outdir: Path, # path to load/save stuff to/from
-        predictions_time_to_run: int = 10800 # seconds to run MAPElites over GP for prediction map production
+        predictions_time_to_run: int = 3600 # seconds to run MAPElites over GP for prediction map production
 ) -> None:
     log.info("Beginning Predictive Map")
     # note uses batch size 50, so 50*num_iterations samples will be taken on GP
@@ -853,6 +864,9 @@ def create_predicted_archive(
                 scheduler.result_archive.stats.coverage,
                 additional_broken_legs
             )
+
+    with open(outdir / "obs_and_predicted_archive.sav", "wb") as f:
+        pickle.dump(scheduler.result_archive, f)
 
 if __name__ == "__main__":
     fire.Fire(mujoco_main)

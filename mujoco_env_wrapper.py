@@ -27,8 +27,9 @@ class MujocoEnvWrapper(gym.Wrapper):
             elif "floor" not in geom_name: # note: this is a little fragile, relies on everything other than the floor/blocks being part of the robot (i.e. no other obstacles)
                 self.robot_ids.add(i)
         
-        self.prior_x = [0,0,0,0,0]
-        self.prior_y = [0,0,0,0,0]
+        self.prior_x = [0,0,0]
+        self.prior_y = [0,0,0]
+        self.most_recent_checkpoint_idx = 0
         self.standing_still_counter = 0
 
         self.start_x = 0
@@ -87,12 +88,21 @@ class MujocoEnvWrapper(gym.Wrapper):
             check_idx = np.argmax(dist_since_checkpoints)
             self.prior_x[check_idx] = x_pos
             self.prior_y[check_idx] = y_pos
+            self.most_recent_checkpoint_idx = check_idx
 
             # but reward based on the minimum distance between new pos and checkpoint pos
             # in most scenarios this is "correct", there are some cases (e.g. u-turn in dead-end)
             # where it will slightly undercount a "fair" representation of the travel distance
+            # however there's not a good generalisable way to distinguish between "turning around at a dead end"
+            # and "turning around to hack the fitness by walking in one corridor"
+            # without hardcoding in where dead ends are in a specific map
             reward_idx = np.argmin(dist_since_checkpoints)
             info["path_dist"] = dist_since_checkpoints[reward_idx]
+        elif (self.current_step >= self.max_episode_steps-1):
+            # at last step, count distance from most recent checkpoint in its entirety
+            # this provides a smoother fitness gradient rather than sharp discontinuities
+            # depending on whether it finished 3/4 of the way to a new checkpoint
+            info["path_dist"] = dist_since_checkpoints[self.most_recent_checkpoint_idx]
         else:
             info["path_dist"] = 0
 
