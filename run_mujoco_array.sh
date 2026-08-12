@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 
-#SBATCH --array=1-3
+#SBATCH --array=1-60
 
 module purge
 cd /users/40795510/sharedscratch/
