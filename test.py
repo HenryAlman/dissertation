@@ -3,6 +3,7 @@ import numpy as np
 from gymnasium_robotics.envs.maze.maps import OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
 import math
 
+"""
 model = np.asarray( [ 0.25,                 0.8,                 -0.8,
  -0.8,                  0.8,                  0.8,
   0.8,                  0.8,                 -0.26548861419458925,
@@ -32,7 +33,7 @@ maze_params = {
         "min_obj": min_obj
     }
 
-xml_file = "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"
+xml_file = "/home/henry/dissertation_5thAug/rangefinder_hex.xml"
 
 num_legs = 6
 gait_phases = np.array([
@@ -90,7 +91,11 @@ r1 = simulate(model, maze_params, xml_file, controller_params=controller_params,
 print(r1)
 
 
-"""
+
 predicted_elites = np.load("/home/henry/dissertation_logs_5thAug/bop_hex/BOPElites_MEDIUM_MAZE_hex/2026-08-06_02-16-32_seed-None_4656/predicted_elites.npy")
 print(predicted_elites)
 """
+
+predelites = np.load("/home/henry/dissertation_logs_actual_2/dissertation_logs/diss_script/BOPElites_MEDIUM_MAZE_ant_unilateral/2026-08-12_16-31-08_seed-None_1537/predicted_elites.npy")
+
+print(predelites)

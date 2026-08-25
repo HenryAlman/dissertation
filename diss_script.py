@@ -99,7 +99,7 @@ def simulate(
     done = False # track whether session was terminated or truncated
     
     # initialise
-    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
+    if (xml_file == "/home/henry/dissertation_5thAug/new_racecar.xml"):
         # uses simple/direct policy
         w_end = 8
         weights = model[:w_end].reshape(4, 2)
@@ -140,7 +140,7 @@ def simulate(
         rangefinders = 1.0 - np.clip(rangefinders_data / maze_max_dist, 0.0, 1.0)
 
         # CAR:
-        if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
+        if (xml_file == "/home/henry/dissertation_5thAug/new_racecar.xml"):
             velocimeter_x = mujoco_data.sensordata[3].copy()
             velocimeter_y = mujoco_data.sensordata[4].copy()
             xy_speed_ratio = np.clip((math.sqrt(velocimeter_x**2 + velocimeter_y**2) / 1.5), 0.0, 1.0) # top speed is ~1.5
@@ -477,7 +477,7 @@ def mujoco_main(
     algorithm_params = "{}", # paramater dict for algorithm. See create_scheduler for details per algorithm. Pass in as JSON.
     save_emitter_0: bool = True, # pickle emitter 0 to reuse later. Will include a copy of archive, GP, etc.
     maze_str: str = "MEDIUM_MAZE", # OPEN, U_MAZE, MEDIUM_MAZE, LARGE_MAZE
-    xml_file: str = "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
+    xml_file: str = "/home/henry/dissertation_5thAug/rangefinder_ant.xml", # path to XML to use. Ensure compatibility with script (e.g. 3x rangefinders expected)
     sensor_mode: str = "unilateral", # sensor mode to use, see legged controller
     num_rbfs: int = 10, # number of rbfs to use in legged controller
     rbf_sigma: float = ((math.sqrt(5)-1)/2) * (0.67), # rbf_sigma, see LeggedController for explanation.
@@ -546,13 +546,13 @@ def mujoco_main(
     }
 
     # XML-BASED PARAMS:
-    if (xml_file == "/users/40795510/sharedscratch/dissertation/new_racecar.xml"):
+    if (xml_file == "/home/henry/dissertation_5thAug/new_racecar.xml"):
         solution_dim = 10
         lower_bounds=np.full(solution_dim, -1) # raw weights from inputs to outputs. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         upper_bounds=np.full(solution_dim, 1) # raw weights. Note outputs get multiplied by ctrl_range (20, 0.785 from XML)
         xml_str = "car"
         controller_params = None # doesn't get used for car test case
-    elif (xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_ant.xml"):
+    elif (xml_file == "/home/henry/dissertation_5thAug/rangefinder_ant.xml"):
         num_legs = 4
         gait_phases = np.array([
                                 0.0, # frontright
@@ -602,7 +602,7 @@ def mujoco_main(
             lower_bounds=np.hstack([0.05, np.full(rbfs_num_weights, -0.8), np.full(sensors_num_weights, -1.2)]) # cpg freq, rbf-torque weights, sensor reflex weights
             upper_bounds=np.hstack([0.25, np.full(rbfs_num_weights, 0.8), np.full(sensors_num_weights, 1.2)])
         else: raise ValueError("Unknown sensor_mode!")
-    elif(xml_file == "/users/40795510/sharedscratch/dissertation/rangefinder_hex.xml"):
+    elif(xml_file == "/home/henry/dissertation_5thAug/rangefinder_hex.xml"):
         num_legs = 6
         gait_phases = np.array([
                                 0.0, # frontright

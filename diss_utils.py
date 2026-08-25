@@ -19,8 +19,8 @@ def save_heatmap(archive: GridArchive, filename: str | Path, min_obj: int | floa
     """
     fig, ax = plt.subplots(figsize=(8, 6))
     grid_archive_heatmap(archive, vmin=min_obj, vmax=max_obj, ax=ax)
-    ax.set_ylabel("Final Y Position")
-    ax.set_xlabel("Final X Position")
+    ax.set_ylabel("Avg Control Cost")
+    ax.set_xlabel("Avg Torso Height")
     fig.savefig(filename)
 
 
